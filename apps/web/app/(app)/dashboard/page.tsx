@@ -24,7 +24,10 @@ async function probeDb(url: string | undefined): Promise<boolean> {
 
 export default async function Dashboard() {
   const [requests, audit, stats, sevDist, targetUp, shadowUp, sentinelUp] = await Promise.all([
-    listRequests(),
+    // Only the 5 most recent are rendered below — ask for 5, not the default 50.
+    // Each record is hydrated with several sequential queries, so fetching 50 to
+    // show 5 was ~10x the database work per dashboard load.
+    listRequests({ limit: 5 }),
     listAuditEvents(),
     getDashboardStats(),
     getSeverityDistribution(),

@@ -188,6 +188,14 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   const paused = decidable;
   const scene = db3dModel(r.upSql);
 
+  // Whether the safety pipeline has actually produced a verdict yet. getRequest()
+  // substitutes overallSeverity='green' when no blast report exists, so a freshly
+  // submitted / generating / dry-running / early-failed request would otherwise
+  // render as SAFE before any analysis ran. Analysis populates one finding per
+  // classified statement, so a non-empty findings list is the reliable signal.
+  const preAnalysis = ["received", "generating", "reviewing", "dry_running"].includes(r.status);
+  const analyzed = !preAnalysis && r.findings.length > 0;
+
   return (
     <>
       <AutoRefresh status={r.status} />
@@ -266,8 +274,8 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         {/* Right column: readouts + findings */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {/* Hero readout — rows affected */}
-          <div className={`glass ${r.overallSeverity === "red" ? "glass-danger" : ""}`} style={{ padding: "16px 18px" }}>
-            <StatReadout label="Rows affected · est" value={r.rowsAffected?.toLocaleString() ?? "—"} tone={r.overallSeverity === "red" ? "danger" : r.overallSeverity === "amber" ? "warn" : "safe"} hero />
+          <div className={`glass ${analyzed && r.overallSeverity === "red" ? "glass-danger" : ""}`} style={{ padding: "16px 18px" }}>
+            <StatReadout label="Rows affected · est" value={r.rowsAffected?.toLocaleString() ?? "—"} tone={!analyzed ? undefined : r.overallSeverity === "red" ? "danger" : r.overallSeverity === "amber" ? "warn" : "safe"} hero />
           </div>
 
           {/* Lock + Rollback side by side */}
@@ -325,19 +333,36 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
           </div>
 
           {/* Blast findings */}
-          <div className={`glass ${r.overallSeverity === "red" ? "glass-danger" : ""}`}>
-            <h3 className="section-title">Blast report <SeverityChip severity={r.overallSeverity} /></h3>
-            {r.findings.map((f, i) => (
-              <div key={i} className="finding-row">
-                <span className="f-icon" style={{ color: `var(--${f.severity === "green" ? "safe" : f.severity === "amber" ? "warn" : "danger"})` }}>
-                  {f.severity === "green" ? "✓" : f.severity === "amber" ? "▲" : "⛔"}
+          <div className={`glass ${analyzed && r.overallSeverity === "red" ? "glass-danger" : ""}`}>
+            <h3 className="section-title">
+              Blast report{" "}
+              {analyzed ? (
+                <SeverityChip severity={r.overallSeverity} />
+              ) : (
+                <span className="sev-chip sev-amber">
+                  {preAnalysis ? "Analysis pending" : "No verdict"}
                 </span>
-                <div>
-                  <div style={{ color: "var(--text-dim)" }}>{f.note}</div>
-                  {f.lockType && <div className="f-lock">{f.lockType}</div>}
+              )}
+            </h3>
+            {analyzed ? (
+              r.findings.map((f, i) => (
+                <div key={i} className="finding-row">
+                  <span className="f-icon" style={{ color: `var(--${f.severity === "green" ? "safe" : f.severity === "amber" ? "warn" : "danger"})` }}>
+                    {f.severity === "green" ? "✓" : f.severity === "amber" ? "▲" : "⛔"}
+                  </span>
+                  <div>
+                    <div style={{ color: "var(--text-dim)" }}>{f.note}</div>
+                    {f.lockType && <div className="f-lock">{f.lockType}</div>}
+                  </div>
                 </div>
+              ))
+            ) : (
+              <div style={{ color: "var(--text-dim)", fontSize: 13 }}>
+                {preAnalysis
+                  ? "The safety pipeline is still running — no severity verdict yet."
+                  : "No safety analysis was produced for this request."}
               </div>
-            ))}
+            )}
           </div>
 
           {/* Qodo review */}
