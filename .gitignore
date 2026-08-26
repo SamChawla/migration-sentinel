@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.next/
+out/
+*.log
+.env
+.env.local
+coverage/
+.DS_Store
+drizzle/.snapshot/
+*.tsbuildinfo
+.spike-state.json
+.env.*.local
+# Internal planning/design docs — kept local, not published to the repo
+docs/
