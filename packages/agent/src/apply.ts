@@ -27,19 +27,46 @@ import {
 
 /**
  * True when the migration contains a statement that CANNOT run inside a
- * transaction block (CREATE INDEX CONCURRENTLY, VACUUM, ALTER TYPE ... ADD
- * VALUE, etc.), forcing the autocommit apply path. Detection runs on CODE only —
- * comments are stripped (splitStatements) and string/dollar literals blanked
- * (codeOnly) — so a keyword that appears only in a `-- CONCURRENTLY` comment or a
- * string literal can't misclassify an otherwise-transactional migration.
+ * transaction block (CREATE INDEX CONCURRENTLY, VACUUM, etc.), forcing the
+ * autocommit apply path. Detection runs on CODE only — comments are stripped
+ * (splitStatements) and string/dollar literals blanked (codeOnly) — so a keyword
+ * that appears only in a `-- CONCURRENTLY` comment or a string literal can't
+ * misclassify an otherwise-transactional migration.
+ *
+ * NOTE: `ALTER TYPE ... ADD VALUE` is deliberately NOT here. Postgres 12+ allows
+ * it inside a transaction (as long as the new value isn't USED until after
+ * commit), so running it transactionally is correct — a later statement failure
+ * then rolls the whole migration back atomically instead of leaving the enum
+ * value committed. If the migration misuses the value in the same transaction,
+ * Postgres raises "unsafe use of new value" and we roll back, which is the safe
+ * outcome.
  */
 export function isNonTransactional(upSql: string): boolean {
   const code = splitStatements(upSql).map(codeOnly).join("\n");
-  return (
-    /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
-      code,
-    ) || /\bALTER\s+TYPE\b[\s\S]*\bADD\s+VALUE\b/i.test(code)
+  return /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
+    code,
   );
+}
+
+/**
+ * A statement that subverts the guarded-apply contract: the executor OWNS the
+ * transaction boundary and the lock/statement timeouts, so a migration must not
+ * contain its own transaction control (which would commit earlier statements
+ * outside the executor's BEGIN/COMMIT and make a later ROLLBACK ineffective) nor
+ * reset the safety timeouts (which would let it wait indefinitely). Checked
+ * per-statement on code-only so keywords in comments/strings don't false-positive.
+ */
+export function findExecutorSubversion(upSql: string): string | null {
+  for (const stmt of splitStatements(upSql)) {
+    const c = codeOnly(stmt).trim();
+    if (/^(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT|SET\s+CONSTRAINTS|ABORT)\b/i.test(c))
+      return `transaction-control statement ("${stmt.slice(0, 40)}") — the executor owns the transaction`;
+    if (/^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout)\b/i.test(c))
+      return `timeout override ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
+    if (/^RESET\s+(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout|ALL)\b/i.test(c))
+      return `RESET of a safety GUC ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
+  }
+  return null;
 }
 
 export interface ApplyOptions {
@@ -72,6 +99,17 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     expectedConfirmValue: rec.approval.expectedConfirm ?? null,
     blocked,
   });
+
+  // Refuse any migration that would subvert the executor's transaction/timeout
+  // guarantees (embedded COMMIT/BEGIN, or SET/RESET of the safety timeouts). Done
+  // BEFORE the claim so a bad artifact fails fast without touching request state.
+  const subversion = findExecutorSubversion(artifact.upSql);
+  if (subversion) {
+    throw new Error(
+      `applyMigration: refusing to apply — migration contains a ${subversion}. ` +
+        `The guarded apply owns the transaction and timeouts; rewrite the migration without it.`,
+    );
+  }
 
   // SECURITY: bind the apply to the SAME target the pipeline analyzed — the one
   // resolved from the request, never a caller-supplied override. opts.targetUrl

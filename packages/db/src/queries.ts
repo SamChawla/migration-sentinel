@@ -421,14 +421,22 @@ export async function recordApproval(input: {
     // (defeating the one-shot claim). We flip the request status FIRST, under a
     // state condition; if nothing moved, the request wasn't decidable and we
     // leave the approval row untouched too.
+    // A BLOCKED request can only ever be REJECTED (closed out) — never approved.
+    // Whole-dataset destruction is not human-overridable, so an 'approved'
+    // decision is eligible only from 'awaiting_approval'. Rejecting is allowed
+    // from either decidable state.
     const newStatus = input.decision === "approved" ? "approved" : "rejected";
+    const eligible =
+      input.decision === "approved"
+        ? (["awaiting_approval"] as const)
+        : (["awaiting_approval", "blocked"] as const);
     const moved = await tx
       .update(migrationRequest)
       .set({ status: newStatus, updatedAt: new Date() })
       .where(
         and(
           eq(migrationRequest.id, input.requestId),
-          inArray(migrationRequest.status, ["awaiting_approval", "blocked"]),
+          inArray(migrationRequest.status, [...eligible]),
         ),
       )
       .returning({ id: migrationRequest.id });
@@ -447,20 +455,31 @@ export async function recordApproval(input: {
 }
 
 /**
- * Reset approval to pending (used when the gate check fails). Reverts BOTH the
- * approval decision and the request status back to awaiting_approval so a
- * rejected gate check never leaves the request looking approved.
+ * Reset approval to pending (used when a gate pre-check fails). GUARDED: it only
+ * acts when the request is still 'awaiting_approval'. A failing gate check from
+ * one caller must NEVER erase a valid approval that another caller has already
+ * recorded and CLAIMED for apply — resetting an 'approved'/'applying' request
+ * would leave the executor committing while the DB shows the approval as pending.
+ * Returns whether it actually reset anything.
  */
-export async function resetApproval(requestId: string): Promise<void> {
-  await db.transaction(async (tx) => {
+export async function resetApproval(requestId: string): Promise<boolean> {
+  return await db.transaction(async (tx) => {
+    const moved = await tx
+      .update(migrationRequest)
+      .set({ status: "awaiting_approval", updatedAt: new Date() })
+      .where(
+        and(
+          eq(migrationRequest.id, requestId),
+          eq(migrationRequest.status, "awaiting_approval"),
+        ),
+      )
+      .returning({ id: migrationRequest.id });
+    if (moved.length !== 1) return false;
     await tx
       .update(approval)
       .set({ decision: "pending", approver: null, decidedAt: null })
       .where(eq(approval.migrationRequestId, requestId));
-    await tx
-      .update(migrationRequest)
-      .set({ status: "awaiting_approval", updatedAt: new Date() })
-      .where(eq(migrationRequest.id, requestId));
+    return true;
   });
 }
 

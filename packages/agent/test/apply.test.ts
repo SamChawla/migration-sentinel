@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isNonTransactional } from "../src/apply";
+import { isNonTransactional, findExecutorSubversion } from "../src/apply";
 
 /**
  * Regression tests for the Qodo PR #4 finding on the guarded apply executor:
@@ -26,12 +26,46 @@ describe("isNonTransactional — autocommit detection (R5 #4)", () => {
     expect(isNonTransactional(sql)).toBe(false);
   });
 
-  it("still detects ALTER TYPE ... ADD VALUE across statements", () => {
-    expect(isNonTransactional("ALTER TYPE mood ADD VALUE 'excited'")).toBe(true);
+  it("treats ALTER TYPE ... ADD VALUE as transactional in PG12+ (R6 #3)", () => {
+    // No longer forced to autocommit — running it in the executor's txn lets a
+    // later failure roll back atomically instead of leaving the enum value.
+    expect(isNonTransactional("ALTER TYPE mood ADD VALUE 'excited'")).toBe(false);
   });
 
   it("treats a plain multi-statement DDL migration as transactional", () => {
     const sql = "ALTER TABLE a ADD COLUMN x int; ALTER TABLE b ADD COLUMN y int;";
     expect(isNonTransactional(sql)).toBe(false);
+  });
+});
+
+describe("findExecutorSubversion — guarded-apply contract (R6 #1/#2)", () => {
+  it("flags an embedded COMMIT", () => {
+    expect(findExecutorSubversion("ALTER TABLE a ADD COLUMN x int; COMMIT;")).toMatch(/transaction-control/);
+  });
+
+  it("flags BEGIN / SAVEPOINT / ROLLBACK", () => {
+    expect(findExecutorSubversion("BEGIN; UPDATE t SET x=1 WHERE id=1;")).toMatch(/transaction-control/);
+    expect(findExecutorSubversion("SAVEPOINT s1")).toMatch(/transaction-control/);
+    expect(findExecutorSubversion("ROLLBACK")).toMatch(/transaction-control/);
+  });
+
+  it("flags SET statement_timeout / lock_timeout overrides", () => {
+    expect(findExecutorSubversion("SET statement_timeout = 0; VACUUM;")).toMatch(/timeout override/);
+    expect(findExecutorSubversion("SET LOCAL lock_timeout = 0")).toMatch(/timeout override/);
+    expect(findExecutorSubversion("RESET statement_timeout")).toMatch(/RESET of a safety GUC/);
+  });
+
+  it("does NOT flag a normal DDL migration", () => {
+    expect(findExecutorSubversion("ALTER TABLE users ADD COLUMN age int; CREATE INDEX i ON users (age);")).toBeNull();
+  });
+
+  it("does NOT flag COMMIT appearing in a comment or string", () => {
+    expect(findExecutorSubversion("ALTER TABLE t ADD COLUMN note text DEFAULT 'please COMMIT often'")).toBeNull();
+    expect(findExecutorSubversion("-- remember to COMMIT\nALTER TABLE t ADD COLUMN x int")).toBeNull();
+  });
+
+  it("does NOT flag END inside a function body", () => {
+    const sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql";
+    expect(findExecutorSubversion(sql)).toBeNull();
   });
 });
