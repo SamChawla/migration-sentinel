@@ -63,8 +63,15 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   const targetUrl = await getRequestTargetUrl(requestId);
   if (!targetUrl) throw new Error("applyMigration: no target URL for this request");
 
-  const lockTimeoutMs = opts.lockTimeoutMs ?? Number(process.env.APPLY_LOCK_TIMEOUT_MS ?? 3000);
-  const statementTimeoutMs = opts.statementTimeoutMs ?? Number(process.env.APPLY_STATEMENT_TIMEOUT_MS ?? 30000);
+  // Positive integer only — 0 DISABLES the timeout in Postgres, and NaN/negative
+  // are invalid, so any of those falls back to the safe default. Validated BEFORE
+  // the claim so a bad config fails fast without touching request state.
+  const posInt = (v: unknown, def: number): number => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+  };
+  const lockTimeoutMs = posInt(opts.lockTimeoutMs ?? process.env.APPLY_LOCK_TIMEOUT_MS, 3000);
+  const statementTimeoutMs = posInt(opts.statementTimeoutMs ?? process.env.APPLY_STATEMENT_TIMEOUT_MS, 30000);
 
   // One-shot: atomically flip approved → applying. If we don't win the claim,
   // the request was already applied (or isn't approved) — never reapply.
@@ -90,9 +97,10 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   // CREATE INDEX CONCURRENTLY (and a few others) cannot run inside a transaction
   // block. Those run in autocommit — there is no atomic rollback for them, by
   // PostgreSQL's own design, so a later failure can leave earlier DDL committed.
-  const nonTransactional = /\b(CONCURRENTLY|VACUUM|REINDEX\s+DATABASE|CREATE\s+DATABASE|DROP\s+DATABASE)\b/i.test(
-    codeOnly(artifact.upSql),
-  );
+  const nonTransactional =
+    /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
+      codeOnly(artifact.upSql),
+    ) || /\bALTER\s+TYPE\b[\s\S]*\bADD\s+VALUE\b/i.test(codeOnly(artifact.upSql));
 
   // Everything after the claim is guarded: ANY failure (run-row insert, connect,
   // execution, or bookkeeping) lands the request in a definite 'failed' state

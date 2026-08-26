@@ -95,6 +95,14 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
   const req = await getRequest(requestId);
   if (!req) throw new Error(`runAgentPipeline: request ${requestId} not found`);
 
+  // Only run the analysis pipeline for a fresh request. Re-invoking it on a
+  // request that has already reached the gate or beyond must NOT reopen a
+  // completed migration (which would reset it to dry_running → awaiting_approval
+  // and leave stale approval state attached).
+  if (req.status !== "received" && req.status !== "generating") {
+    throw new Error(`runAgentPipeline: request ${requestId} is already past intake (status=${req.status}); refusing to reopen.`);
+  }
+
   const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));
   if (!targetUrl) throw new Error("runAgentPipeline: no target URL (set TARGET_DB_URL or target.connection_url)");
   const shadowAdminUrl = opts.shadowAdminUrl ?? process.env.SHADOW_ADMIN_URL;
