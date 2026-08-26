@@ -111,6 +111,26 @@ export function splitStatements(sql: string): string[] {
       }
       continue;
     }
+    if (ch === '"') {
+      // Double-quoted identifier ("" escapes a quote). A ; inside one is part of
+      // the identifier (e.g. "a;b") and must NOT split the statement.
+      current += ch;
+      i++;
+      while (i < n) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          current += '""';
+          i += 2;
+          continue;
+        }
+        current += sql[i];
+        if (sql[i] === '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
     if (ch === "$") {
       const tag = sql.slice(i).match(/^\$[A-Za-z_0-9]*\$/)?.[0];
       if (tag) {
@@ -156,7 +176,10 @@ export function classifyStatement(statement: string): StatementClassification {
   // outright. A DROP COLUMN is irreversible too, but it is a scoped, named loss
   // the operator can accept with a typed confirmation, so it is NOT blocking.
   const isWholeObjectDestroy =
-    /\bDROP\s+TABLE\b/.test(u) || /\bTRUNCATE\b/.test(u) || /\bDROP\s+SCHEMA\b/.test(u);
+    /\bDROP\s+TABLE\b/.test(u) ||
+    /\bTRUNCATE\b/.test(u) ||
+    /\bDROP\s+SCHEMA\b/.test(u) ||
+    /\bDROP\s+DATABASE\b/.test(u);
   const isUnboundedDml =
     (/^\s*UPDATE\b/i.test(code) || /^\s*DELETE\b/i.test(code)) && !/\bWHERE\b/.test(u);
 
@@ -177,6 +200,8 @@ export function classifyStatement(statement: string): StatementClassification {
   });
 
   // ── Irreversible / data-loss (RED) ────────────────────────────────────
+  if (/\bDROP\s+DATABASE\b/.test(u))
+    return make("red", "irreversible", true, "Drops a database — destroys every object and row in it.", "AccessExclusiveLock");
   if (/\bDROP\s+SCHEMA\b/.test(u))
     return make("red", "irreversible", true, "Drops a schema — recursively destroys its tables and all their data.", "AccessExclusiveLock");
   if (/\bDROP\s+TABLE\b/.test(u))
@@ -211,6 +236,16 @@ export function classifyStatement(statement: string): StatementClassification {
       "RowExclusiveLock",
     );
   }
+
+  // Data-modifying CTE — a WITH that INSERTs/UPDATEs/DELETEs/MERGEs mutates rows
+  // even though the statement text starts with WITH/SELECT.
+  if (/^\s*WITH\b/i.test(code) && /\b(INSERT|UPDATE|DELETE|MERGE)\b/.test(u))
+    return make("amber", "lossy", true, "Data-modifying CTE — a WITH that writes rows; a schema-only rollback does not restore them.", "RowExclusiveLock");
+
+  // CREATE TABLE AS SELECT (and SELECT INTO) — scans a source relation and
+  // materializes rows; NOT the metadata-only new-object case.
+  if (/\bCREATE\s+TABLE\b.*\bAS\b.*\bSELECT\b/.test(u) || /\bSELECT\b.*\bINTO\b/.test(u))
+    return make("amber", "lossy", true, "CREATE TABLE AS SELECT — scans the source and materializes rows (not metadata-only).", "AccessShareLock");
 
   // ── Locking / slow schema ops (AMBER) ─────────────────────────────────
   if (/\bALTER\s+COLUMN\b.*\bTYPE\b/.test(u))

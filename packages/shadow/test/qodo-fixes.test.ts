@@ -140,3 +140,61 @@ describe("Round 2 regressions", () => {
     expect(checks[0].probeSql).toBeNull();
   });
 });
+
+describe("Round 3 regressions", () => {
+  it("DROP DATABASE is blocked (R3 #1)", () => {
+    const c = classifyStatement("DROP DATABASE analytics");
+    expect(c.severity).toBe("red");
+    expect(c.blocking).toBe(true);
+  });
+
+  it("rejects backend-signal functions in a read query (R3 #2)", () => {
+    expect(() => assertReadOnly("SELECT pg_terminate_backend(123)")).toThrow();
+    expect(() => assertReadOnly("SELECT pg_cancel_backend(123)")).toThrow();
+  });
+
+  it("does not split on a semicolon inside a double-quoted identifier (R3 #5)", () => {
+    const stmts = splitStatements('SELECT * FROM "a;b"; SELECT 1');
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0]).toContain('"a;b"');
+  });
+
+  it("classifies a data-modifying CTE as data-mutating (R3 #6)", () => {
+    const c = classifyStatement("WITH d AS (DELETE FROM users RETURNING id) SELECT * FROM d");
+    expect(c.dataMutating).toBe(true);
+  });
+
+  it("classifies CREATE TABLE AS SELECT as data-mutating, not green (R3 #4)", () => {
+    const c = classifyStatement("CREATE TABLE snap AS SELECT * FROM orders");
+    expect(c.severity).toBe("amber");
+    expect(c.dataMutating).toBe(true);
+  });
+
+  it("pre-flights CREATE UNIQUE INDEX (R3 #3)", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX idx ON users (email)");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].kind).toBe("unique");
+  });
+
+  it("captures a CHECK with nested parens (R3 #7)", () => {
+    const checks = requiredPreflightChecks("ALTER TABLE t ADD CONSTRAINT ck CHECK (coalesce(age, 0) >= 0)");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toContain("coalesce(age, 0) >= 0");
+  });
+
+  it("NOT VALID on one action does not mask a validated sibling (R3 #9)", () => {
+    const checks = requiredPreflightChecks(
+      "ALTER TABLE t ADD CONSTRAINT a CHECK (x > 0) NOT VALID, ADD CONSTRAINT b CHECK (y > 0)",
+    );
+    // only the validated sibling (b) gets a probe
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toContain("y > 0");
+  });
+
+  it("a DEFAULT on one action does not suppress a no-default NOT NULL sibling (R3 #8)", () => {
+    const checks = requiredPreflightChecks(
+      "ALTER TABLE t ADD COLUMN a int NOT NULL, ADD COLUMN b int DEFAULT 0",
+    );
+    expect(checks.some((c) => c.kind === "add_notnull_no_default")).toBe(true);
+  });
+});

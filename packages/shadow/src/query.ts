@@ -21,7 +21,7 @@ const FORBIDDEN =
 // State-mutating / session-escaping functions that survive a read-only txn +
 // rollback (session advisory locks, sequence mutation, config, file/network I/O).
 const FORBIDDEN_FUNCTIONS =
-  /\b(pg_advisory\w*|nextval|setval|set_config|dblink\w*|lo_import|lo_export|pg_read_file|pg_ls_dir|pg_sleep)\b/i;
+  /\b(pg_advisory\w*|pg_cancel_backend|pg_terminate_backend|pg_signal_backend|nextval|setval|set_config|dblink\w*|lo_import|lo_export|pg_read_file|pg_ls_dir|pg_sleep)\b/i;
 
 export class ReadOnlyViolation extends Error {}
 

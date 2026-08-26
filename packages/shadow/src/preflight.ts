@@ -50,90 +50,169 @@ export function isDataDependent(sql: string): boolean {
 const IDENT = `(?:"(?:[^"]|"")+"|[\\w$]+)`;
 const QIDENT = `${IDENT}(?:\\.${IDENT})*`;
 
+/** Split on top-level commas, respecting parens and single/double-quoted text.
+ *  Used to break one ALTER TABLE into its individual actions so each is analyzed
+ *  on its own (NOT VALID, DEFAULT, etc. are per-action, not statement-wide). */
+function splitTopLevel(s: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = "";
+  let inS = false;
+  let inD = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inS) {
+      cur += ch;
+      if (ch === "'") (s[i + 1] === "'" ? ((cur += "'"), i++) : (inS = false));
+      continue;
+    }
+    if (inD) {
+      cur += ch;
+      if (ch === '"') (s[i + 1] === '"' ? ((cur += '"'), i++) : (inD = false));
+      continue;
+    }
+    if (ch === "'") inS = true;
+    else if (ch === '"') inD = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+    else if (ch === "," && depth === 0) {
+      if (cur.trim()) parts.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
+/** Extract the balanced `(...)` starting at openIdx, quote-aware (handles nested
+ *  parens like CHECK (coalesce(age, 0) >= 0)). Returns content + index after `)`. */
+function firstBalanced(s: string, openIdx: number): { content: string; end: number } | null {
+  if (s[openIdx] !== "(") return null;
+  let depth = 0;
+  let inS = false;
+  let inD = false;
+  for (let i = openIdx; i < s.length; i++) {
+    const ch = s[i];
+    if (inS) {
+      if (ch === "'") (s[i + 1] === "'" ? i++ : (inS = false));
+      continue;
+    }
+    if (inD) {
+      if (ch === '"') (s[i + 1] === '"' ? i++ : (inD = false));
+      continue;
+    }
+    if (ch === "'") inS = true;
+    else if (ch === '"') inD = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")") {
+      depth--;
+      if (depth === 0) return { content: s.slice(openIdx + 1, i), end: i + 1 };
+    }
+  }
+  return null;
+}
+
 export function requiredPreflightChecks(sql: string): PreflightCheck[] {
   const out: PreflightCheck[] = [];
 
+  const uniqueProbe = (table: string, cols: string, nullsNotDistinct: boolean, label: string) => {
+    const colList = cols.split(",").map((x) => x.trim());
+    const where = nullsNotDistinct ? "" : ` WHERE ${colList.map((c) => `${c} IS NOT NULL`).join(" AND ")}`;
+    out.push({
+      kind: "unique",
+      table,
+      probeSql: `SELECT count(*) AS violations FROM (SELECT ${cols} FROM ${table}${where} GROUP BY ${cols} HAVING count(*) > 1) dup`,
+      failIfPositive: true,
+      description: `Duplicate ${nullsNotDistinct ? "" : "non-null "}(${cols}) values will block the ${label}.`,
+    });
+  };
+
   for (const stmt of splitStatements(sql)) {
-    const tableM = stmt.match(new RegExp(`ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:ONLY\\s+)?(${QIDENT})`, "i"));
-    const table = tableM?.[1] ?? "";
-    // A constraint added NOT VALID does not validate existing rows — nothing to
-    // pre-flight (probing it would raise a false failure).
-    const notValid = /\bNOT\s+VALID\b/i.test(stmt);
-
-    // SET NOT NULL — scan ALL actions (a single ALTER TABLE may list several).
-    for (const m of stmt.matchAll(new RegExp(`ALTER\\s+(?:COLUMN\\s+)?(${QIDENT})\\s+SET\\s+NOT\\s+NULL`, "gi"))) {
-      const c = m[1];
-      out.push({
-        kind: "not_null",
-        table,
-        probeSql: `SELECT count(*) AS violations FROM ${table} WHERE ${c} IS NULL`,
-        failIfPositive: true,
-        description: `Rows where ${c} IS NULL will block SET NOT NULL — a backfill is required first.`,
-      });
+    // CREATE UNIQUE INDEX ... ON table (cols) — data-dependent like ADD UNIQUE.
+    const ci = stmt.match(
+      new RegExp(
+        `CREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:${QIDENT}\\s+)?ON\\s+(?:ONLY\\s+)?(${QIDENT})\\s*(?:USING\\s+${IDENT}\\s*)?\\(([^)]+)\\)`,
+        "i",
+      ),
+    );
+    if (ci) {
+      uniqueProbe(ci[1], ci[2].trim(), false, "UNIQUE INDEX");
+      continue;
     }
 
-    // ADD COLUMN ... NOT NULL without DEFAULT
-    if (/ADD\s+COLUMN\b/i.test(stmt) && /\bNOT\s+NULL\b/i.test(stmt) && !/\bDEFAULT\b/i.test(stmt)) {
-      out.push({
-        kind: "add_notnull_no_default",
-        table,
-        probeSql: `SELECT count(*) AS violations FROM ${table}`,
-        failIfPositive: true,
-        description: `Adding a NOT NULL column with no DEFAULT fails if the table has any rows — add a DEFAULT or backfill.`,
-      });
-    }
+    const tableM = stmt.match(new RegExp(`ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:ONLY\\s+)?(${QIDENT})\\s+([\\s\\S]+)$`, "i"));
+    if (!tableM) continue;
+    const table = tableM[1];
 
-    // ADD UNIQUE [NULLS [NOT] DISTINCT] (cols)
-    for (const m of stmt.matchAll(
-      new RegExp(`ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?UNIQUE\\s*(NULLS\\s+(?:NOT\\s+)?DISTINCT\\s*)?\\(([^)]+)\\)`, "gi"),
-    )) {
-      const nullsNotDistinct = /NOT\s+DISTINCT/i.test(m[1] ?? "");
-      const cols = m[2].trim();
-      const colList = cols.split(",").map((x) => x.trim());
-      // NULLS NOT DISTINCT → null keys DO collide, so don't exclude them. Under
-      // the default NULLS DISTINCT they never collide, so exclude null-bearing rows.
-      const where = nullsNotDistinct
-        ? ""
-        : ` WHERE ${colList.map((c) => `${c} IS NOT NULL`).join(" AND ")}`;
-      out.push({
-        kind: "unique",
-        table,
-        probeSql: `SELECT count(*) AS violations FROM (SELECT ${cols} FROM ${table}${where} GROUP BY ${cols} HAVING count(*) > 1) dup`,
-        failIfPositive: true,
-        description: `Duplicate ${nullsNotDistinct ? "" : "non-null "}(${cols}) values will block the UNIQUE constraint.`,
-      });
-    }
+    // Analyze EACH action independently — NOT VALID / DEFAULT bind to their own action.
+    for (const action of splitTopLevel(tableM[2])) {
+      const notValid = /\bNOT\s+VALID\b/i.test(action);
 
-    // ADD CHECK (expr) [NO INHERIT] — skipped when NOT VALID.
-    if (!notValid) {
-      for (const m of stmt.matchAll(
-        new RegExp(`ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?CHECK\\s*\\((.+?)\\)\\s*(?:NO\\s+INHERIT)?\\s*(?:NOT\\s+VALID)?\\s*(?:,|$)`, "gi"),
-      )) {
-        const expr = m[1].trim();
+      let m = action.match(new RegExp(`ALTER\\s+(?:COLUMN\\s+)?(${QIDENT})\\s+SET\\s+NOT\\s+NULL`, "i"));
+      if (m) {
         out.push({
-          kind: "check",
+          kind: "not_null",
           table,
-          probeSql: `SELECT count(*) AS violations FROM ${table} WHERE NOT (${expr})`,
+          probeSql: `SELECT count(*) AS violations FROM ${table} WHERE ${m[1]} IS NULL`,
           failIfPositive: true,
-          description: `Existing rows violating CHECK (${expr}) will block it.`,
+          description: `Rows where ${m[1]} IS NULL will block SET NOT NULL — a backfill is required first.`,
         });
+        continue;
       }
-    }
 
-    // ADD FOREIGN KEY (cols) REFERENCES parent [(pcols)] [MATCH FULL] — skipped when NOT VALID.
-    if (!notValid) {
-      for (const m of stmt.matchAll(
+      // ADD COLUMN ... NOT NULL without DEFAULT — checked on THIS action only.
+      if (/^\s*ADD\s+COLUMN\b/i.test(action) && /\bNOT\s+NULL\b/i.test(action) && !/\bDEFAULT\b/i.test(action)) {
+        out.push({
+          kind: "add_notnull_no_default",
+          table,
+          probeSql: `SELECT count(*) AS violations FROM ${table}`,
+          failIfPositive: true,
+          description: `Adding a NOT NULL column with no DEFAULT fails if the table has any rows — add a DEFAULT or backfill.`,
+        });
+        continue;
+      }
+
+      m = action.match(new RegExp(`ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?UNIQUE\\s*(NULLS\\s+(?:NOT\\s+)?DISTINCT\\s*)?\\(([^)]+)\\)`, "i"));
+      if (m) {
+        uniqueProbe(table, m[2].trim(), /NOT\s+DISTINCT/i.test(m[1] ?? ""), "UNIQUE constraint");
+        continue;
+      }
+
+      // ADD CHECK (balanced expr) [NO INHERIT] [NOT VALID] — this action's NOT VALID.
+      if (/^\s*ADD\b/i.test(action)) {
+        const cm = action.match(/\bCHECK\s*\(/i);
+        if (cm) {
+          const bal = firstBalanced(action, action.indexOf("(", cm.index!));
+          if (bal) {
+            if (!/\bNOT\s+VALID\b/i.test(action.slice(bal.end))) {
+              out.push({
+                kind: "check",
+                table,
+                probeSql: `SELECT count(*) AS violations FROM ${table} WHERE NOT (${bal.content.trim()})`,
+                failIfPositive: true,
+                description: `Existing rows violating CHECK (${bal.content.trim()}) will block it.`,
+              });
+            }
+            continue;
+          }
+        }
+      }
+
+      // ADD FOREIGN KEY (cols) REFERENCES parent [(pcols)] [MATCH FULL] — this action's NOT VALID.
+      m = action.match(
         new RegExp(
           `ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?FOREIGN\\s+KEY\\s*\\(([^)]+)\\)\\s*REFERENCES\\s+(${QIDENT})\\s*(?:\\(([^)]+)\\))?\\s*(MATCH\\s+FULL)?`,
-          "gi",
+          "i",
         ),
-      )) {
+      );
+      if (m) {
+        if (notValid) continue;
         const ptable = m[2];
         const matchFull = Boolean(m[4]);
         const cols = m[1].split(",").map((x) => x.trim());
         if (!m[3]) {
-          // REFERENCES parent (implicit primary key) — the parent's PK columns
-          // aren't known statically, so flag it for review rather than skip it.
           out.push({
             kind: "foreign_key",
             table,
@@ -147,12 +226,10 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
         const join = cols.map((c, i) => `p.${pcols[i]} = c.${c}`).join(" AND ");
         let where: string;
         if (matchFull) {
-          // MATCH FULL: only all-null rows are exempt; a partially-null key is a violation.
           const allNull = cols.map((c) => `c.${c} IS NULL`).join(" AND ");
           const anyNull = cols.map((c) => `c.${c} IS NULL`).join(" OR ");
           where = `NOT (${allNull}) AND ((${anyNull}) OR NOT EXISTS (SELECT 1 FROM ${ptable} p WHERE ${join}))`;
         } else {
-          // MATCH SIMPLE (default): rows with any null key are exempt.
           const allNotNull = cols.map((c) => `c.${c} IS NOT NULL`).join(" AND ");
           where = `${allNotNull} AND NOT EXISTS (SELECT 1 FROM ${ptable} p WHERE ${join})`;
         }
@@ -163,18 +240,18 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
           failIfPositive: true,
           description: `Orphan rows with no matching ${ptable}(${m[3]}) will block the foreign key${matchFull ? " (MATCH FULL)" : ""}.`,
         });
+        continue;
       }
-    }
 
-    // ALTER COLUMN ... TYPE — can fail on non-castable values; no safe generic probe.
-    if (new RegExp(`ALTER\\s+(?:COLUMN\\s+)?${QIDENT}\\s+(?:SET\\s+DATA\\s+)?TYPE\\b`, "i").test(stmt)) {
-      out.push({
-        kind: "type_change",
-        table,
-        probeSql: null,
-        failIfPositive: true,
-        description: `Type change may fail on values that don't cast cleanly — review or supply a USING clause. No automatic probe generated.`,
-      });
+      if (new RegExp(`ALTER\\s+(?:COLUMN\\s+)?${QIDENT}\\s+(?:SET\\s+DATA\\s+)?TYPE\\b`, "i").test(action)) {
+        out.push({
+          kind: "type_change",
+          table,
+          probeSql: null,
+          failIfPositive: true,
+          description: `Type change may fail on values that don't cast cleanly — review or supply a USING clause. No automatic probe generated.`,
+        });
+      }
     }
   }
 
