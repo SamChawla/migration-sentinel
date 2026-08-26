@@ -134,16 +134,28 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
   };
 
   for (const stmt of splitStatements(sql)) {
-    // CREATE UNIQUE INDEX ... ON table (cols) — data-dependent like ADD UNIQUE.
-    const ci = stmt.match(
+    // CREATE UNIQUE INDEX ... ON table ( key… ) [NULLS [NOT] DISTINCT] [WHERE pred]
+    // Match only up to the opening paren, then take the BALANCED key list so an
+    // expression key like (lower(email)) isn't truncated at its inner ')'.
+    const ciHead = stmt.match(
       new RegExp(
-        `CREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:${QIDENT}\\s+)?ON\\s+(?:ONLY\\s+)?(${QIDENT})\\s*(?:USING\\s+${IDENT}\\s*)?\\(([^)]+)\\)(?:[\\s\\S]*?\\bWHERE\\b([\\s\\S]+))?`,
+        `CREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:${QIDENT}\\s+)?ON\\s+(?:ONLY\\s+)?(${QIDENT})\\s*(?:USING\\s+${IDENT}\\s*)?\\(`,
         "i",
       ),
     );
-    if (ci) {
-      uniqueProbe(ci[1], ci[2].trim(), false, "UNIQUE INDEX", ci[3]);
-      continue;
+    if (ciHead) {
+      const openIdx = ciHead.index! + ciHead[0].length - 1; // the '(' position
+      const bal = firstBalanced(stmt, openIdx);
+      if (bal) {
+        const tail = stmt.slice(bal.end);
+        // NULLS NOT DISTINCT makes NULL keys collide too, so they must NOT be
+        // excluded from the duplicate probe (else a duplicate-NULL index that
+        // Postgres will reject reads as willFail:false).
+        const nullsNotDistinct = /^\s*NULLS\s+NOT\s+DISTINCT\b/i.test(tail);
+        const whereM = tail.match(/\bWHERE\b([\s\S]+)/i);
+        uniqueProbe(ciHead[1], bal.content.trim(), nullsNotDistinct, "UNIQUE INDEX", whereM?.[1]);
+        continue;
+      }
     }
 
     const tableM = stmt.match(new RegExp(`ALTER\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:ONLY\\s+)?(${QIDENT})\\s+([\\s\\S]+)$`, "i"));

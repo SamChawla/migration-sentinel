@@ -164,23 +164,19 @@ export function sanitizeDump(sql: string): string {
  * fresh shadow owned by a different user.
  */
 export async function dumpTargetSchema(targetUrl: string): Promise<string> {
-  // Pass the connection via libpq environment variables, NOT on the command
-  // line: a --dbname <url> argument leaks the embedded password into the child
-  // process's argv (visible to `ps`/proc listings) and into any failure
-  // diagnostics that echo the command. Env vars are not exposed that way.
+  // Keep the FULL connection string (host, port, db, user, and every query
+  // parameter — sslrootcert, options, connect_timeout, target_session_attrs, …)
+  // so no libpq setting is silently dropped. Only the password is moved OUT of
+  // argv into PGPASSWORD, so it can't leak into the child's argv (`ps`/proc) or
+  // failure diagnostics that echo the command. Everything else stays on the URI.
   const u = new URL(targetUrl);
-  const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
-    PGHOST: u.hostname,
-    PGPORT: u.port || "5432",
-    PGDATABASE: decodeURIComponent(u.pathname.replace(/^\//, "")) || "postgres",
-  };
-  if (u.username) childEnv.PGUSER = decodeURIComponent(u.username);
-  if (u.password) childEnv.PGPASSWORD = decodeURIComponent(u.password);
-  const sslmode = u.searchParams.get("sslmode");
-  if (sslmode) childEnv.PGSSLMODE = sslmode;
+  const password = u.password;
+  u.password = "";
+  const sanitizedUrl = u.toString();
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (password) childEnv.PGPASSWORD = decodeURIComponent(password);
 
-  const args = ["--schema-only", "--no-owner", "--no-privileges", "--no-comments"];
+  const args = ["--schema-only", "--no-owner", "--no-privileges", "--no-comments", "--dbname", sanitizedUrl];
   let lastErr: unknown;
   for (const bin of pgDumpCandidates()) {
     try {

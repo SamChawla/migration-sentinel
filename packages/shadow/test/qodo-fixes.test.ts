@@ -275,3 +275,34 @@ describe("Round 5 regressions", () => {
     expect(nn?.probeSql?.match(/IS NULL/g)).toHaveLength(1);
   });
 });
+
+describe("Round 6 regressions", () => {
+  it("builds an exact probe for an expression unique index (R6 #2)", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON users (lower(email))");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].kind).toBe("unique");
+    // balanced capture keeps the whole expression, not truncated at 'lower(email'
+    expect(checks[0].probeSql).toContain("GROUP BY lower(email)");
+    expect(checks[0].probeSql).not.toBeNull();
+  });
+
+  it("keeps NULL keys in a NULLS NOT DISTINCT unique index probe (R6 #1)", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email) NULLS NOT DISTINCT");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).not.toContain("IS NOT NULL");
+  });
+
+  it("still excludes NULL keys for an ordinary unique index", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email)");
+    expect(checks[0].probeSql).toContain("email IS NOT NULL");
+  });
+
+  it("scopes a partial expression unique index to its predicate (R6 #1/#2)", () => {
+    const checks = requiredPreflightChecks(
+      "CREATE UNIQUE INDEX i ON t (lower(email)) WHERE deleted_at IS NULL",
+    );
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toContain("lower(email)");
+    expect(checks[0].probeSql).toContain("deleted_at IS NULL");
+  });
+});

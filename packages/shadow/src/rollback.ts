@@ -83,8 +83,12 @@ export async function schemaFingerprint(
        JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE ${NS} ORDER BY 1, 2, 3`,
   );
+  // reloptions carries security_barrier / security_invoker — a down that leaves a
+  // view with different security semantics must change the hash even if the SQL
+  // text (pg_get_viewdef) is identical.
   const views = await client.query(
-    `SELECT n.nspname AS schema, c.relname AS view_name, pg_get_viewdef(c.oid) AS def
+    `SELECT n.nspname AS schema, c.relname AS view_name, pg_get_viewdef(c.oid) AS def,
+            c.reloptions
        FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE c.relkind IN ('v','m') AND ${NS} ORDER BY 1, 2`,
   );
@@ -99,8 +103,11 @@ export async function schemaFingerprint(
        JOIN pg_language l ON l.oid = p.prolang
       WHERE ${NS} ORDER BY 1, 2, 3`,
   );
+  // tgenabled captures the enabled/disabled/replica/always state — a down that
+  // fails to re-enable a trigger it disabled must NOT read as schema-restored.
   const triggers = await client.query(
-    `SELECT n.nspname AS schema, t.tgname, c.relname AS table_name, pg_get_triggerdef(t.oid) AS def
+    `SELECT n.nspname AS schema, t.tgname, c.relname AS table_name,
+            pg_get_triggerdef(t.oid) AS def, t.tgenabled
        FROM pg_trigger t
        JOIN pg_class c ON c.oid = t.tgrelid
        JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -115,6 +122,21 @@ export async function schemaFingerprint(
       WHERE schemaname !~ '^pg_' AND schemaname <> 'information_schema'
       ORDER BY 1, 2`,
   );
+  // Sequence OWNED BY dependencies — ALTER SEQUENCE ... OWNED BY changes an auto
+  // dependency (pg_depend deptype 'a') that pg_sequences alone doesn't expose, so
+  // an un-reverted ownership change would otherwise pass rollback verification.
+  const sequenceOwnership = await client.query(
+    `SELECT n.nspname AS schema, s.relname AS sequence,
+            dn.nspname AS owned_schema, t.relname AS owned_table, a.attname AS owned_column
+       FROM pg_class s
+       JOIN pg_namespace n ON n.oid = s.relnamespace
+       JOIN pg_depend d ON d.objid = s.oid AND d.classid = 'pg_class'::regclass AND d.deptype = 'a'
+       JOIN pg_class t ON t.oid = d.refobjid
+       JOIN pg_namespace dn ON dn.oid = t.relnamespace
+       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = d.refobjsubid
+      WHERE s.relkind = 'S' AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+      ORDER BY 1, 2`,
+  );
   const canonical = JSON.stringify({
     schemas: schemas.rows,
     columns: columns.rows,
@@ -124,6 +146,7 @@ export async function schemaFingerprint(
     routines: routines.rows,
     triggers: triggers.rows,
     sequences: sequences.rows,
+    sequenceOwnership: sequenceOwnership.rows,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
