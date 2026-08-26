@@ -32,7 +32,10 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
+      # Creates the `shadow` database used by SHADOW_DATABASE_URL (rollback
+      # integration tests). The default `postgres` maintenance DB still exists
+      # and backs SHADOW_ADMIN_URL, which CREATE/DROPs the ephemeral clones.
+      POSTGRES_DB: shadow
     ports: ["5434:5432"]
     # ephemeral by design — no named volume, wiped on `docker compose down`
 
