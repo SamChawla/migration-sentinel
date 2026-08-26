@@ -557,7 +557,11 @@ async function main() {
 }
 
 function redact(url: string): string {
-  return url.replace(/\/\/([^:]+):[^@]+@/, "//$1:***@");
+  // Mask BOTH forms a password can take: the userinfo (user:pass@) AND a
+  // password carried as a query parameter (?password=... / ?sslpassword=...).
+  return url
+    .replace(/(:\/\/[^:/@]+):[^@]*@/, "$1:***@")
+    .replace(/([?&](?:password|sslpassword|passfile)=)[^&\s]*/gi, "$1***");
 }
 
 main().catch((err) => {

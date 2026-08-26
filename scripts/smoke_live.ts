@@ -89,10 +89,23 @@ async function main() {
   // read), so we drop the column from the database that was actually mutated.
   const cleanupUrl = await getRequestTargetUrl(safeId);
   const t = new Client({ connectionString: cleanupUrl! });
-  await t.connect();
-  await t.query(`ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL}`);
-  await t.end();
-  console.log(`cleanup — dropped ${SAFE_COL}`);
+  try {
+    await t.connect();
+    await t.query(`ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL}`);
+    console.log(`cleanup — dropped ${SAFE_COL}`);
+  } catch (e) {
+    // The smoke test committed a real column; if cleanup fails we must NOT leave
+    // the client leaked (finally handles that) AND must shout the exact manual
+    // fix so the target isn't silently left contaminated.
+    console.error(
+      `cleanup FAILED — the target still has the test column. Run manually:\n` +
+        `  ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL};\n` +
+        `cause: ${(e as Error).message}`,
+    );
+    throw e;
+  } finally {
+    await t.end().catch(() => {});
+  }
 
   console.log("\n✓ All smoke assertions passed.");
   process.exit(0);
