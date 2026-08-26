@@ -8,10 +8,13 @@
  * a dangerous (DROP COLUMN), and a blocked (unbounded DELETE) migration.
  */
 import { Client } from "pg";
-import { createRequest, getRequest } from "@sentinel/db/queries";
+import { createRequest, getRequest, getRequestTargetUrl } from "@sentinel/db/queries";
 import { runAgentPipeline, applyMigration } from "@sentinel/agent";
 
-const TARGET = process.env.TARGET_DB_URL!;
+// A fresh target alias with NO stored URL, so the SAME resolution
+// (getRequestTargetUrl → TARGET_DB_URL) is used for analysis, apply, and
+// cleanup — the analyzed database and the mutated database are provably one.
+const SMOKE_TARGET = `smoke-target-${Date.now()}`;
 // A unique column name per run keeps the smoke idempotent — the applied column
 // never collides with a prior run, and it is dropped again in cleanup.
 const SAFE_COL = `smoke_col_${Date.now()}`;
@@ -28,8 +31,8 @@ function assert(cond: boolean, msg: string): void {
 
 async function scenario(name: string, up: string, down: string, expect: Expect) {
   console.log(`\n=== ${name} ===`);
-  const rec = await createRequest({ title: name, targetDb: "prod-orders-db", upSql: up, downSql: down });
-  await runAgentPipeline(rec.id, { targetUrl: TARGET });
+  const rec = await createRequest({ title: name, targetDb: SMOKE_TARGET, upSql: up, downSql: down });
+  await runAgentPipeline(rec.id);
   const r = await getRequest(rec.id);
   console.log(
     `status=${r?.status} severity=${r?.overallSeverity} reversibility=${r?.reversibility} ` +
@@ -82,9 +85,10 @@ async function main() {
   console.log(result.logs);
   assert(result.status === "applied", `guarded apply expected 'applied', got '${result.status}'`);
 
-  // Cleanup — drop the column we added so the target stays pristine and the
-  // smoke is repeatable.
-  const t = new Client({ connectionString: TARGET });
+  // Cleanup — connect to the SAME target the apply resolved (not a separate env
+  // read), so we drop the column from the database that was actually mutated.
+  const cleanupUrl = await getRequestTargetUrl(safeId);
+  const t = new Client({ connectionString: cleanupUrl! });
   await t.connect();
   await t.query(`ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL}`);
   await t.end();

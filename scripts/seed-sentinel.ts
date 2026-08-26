@@ -75,6 +75,9 @@ async function main() {
     name: "Staging Orders DB",
     engine: "postgres",
     connectionAlias: "staging-orders-db",
+    // Give staging its OWN URL — without it, resolution falls back to
+    // TARGET_DB_URL (production), so a "staging" migration could hit prod.
+    connectionUrl: process.env.STAGING_DB_URL ?? "postgres://postgres:postgres@localhost:5436/staging",
   }).returning();
 
   // ── Helper to make timestamps ─────────────────────────────────────────
@@ -422,8 +425,8 @@ async function main() {
   const [req6] = await tx.insert(migrationRequest).values({
     targetDatabaseId: stagingTarget.id,
     intakeKind: "raw_sql",
-    intakePayload: { sql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);" },
-    title: "Widen orders.amount to numeric(12,2)",
+    intakePayload: { sql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE bigint;" },
+    title: "Widen orders.amount_cents to bigint",
     status: "dry_running",
     requestedBy: "priya@acme.io",
     createdAt: hoursAgo(0.4),
@@ -433,8 +436,8 @@ async function main() {
   await tx.insert(generatedArtifact).values({
     migrationRequestId: req6.id,
     version: 1,
-    upSql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);",
-    downSql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(10,2);",
+    upSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE bigint;",
+    downSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE integer;",
     reversibility: "reversible",
     model: "claude-sonnet-4-20250514",
     createdAt: hoursAgo(0.4),
