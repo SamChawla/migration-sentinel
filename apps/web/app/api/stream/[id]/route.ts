@@ -1,7 +1,7 @@
 /**
  * SSE live-status endpoint. Streams the REAL request status + audit events from
  * the control-plane database as the pipeline advances, and closes when the
- * request reaches a terminal state (or a safety timeout).
+ * request reaches a terminal state, on client disconnect, or a safety timeout.
  */
 import { getRequest, listAuditEvents } from "@sentinel/db/queries";
 import { getSession } from "@/lib/auth";
@@ -11,17 +11,45 @@ export const dynamic = "force-dynamic";
 
 const TERMINAL = new Set(["applied", "failed", "rejected", "rolled_back"]);
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return new Response("Unauthorized", { status: 401 });
 
   const { id } = await params;
   const encoder = new TextEncoder();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let closed = false;
+
+  const clear = () => {
+    closed = true;
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
 
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (event: string, data: unknown) =>
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      const stop = () => {
+        if (closed) return;
+        clear();
+        try {
+          controller.close();
+        } catch {
+          /* already closed */
+        }
+      };
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          // client went away mid-write — always tear the poller down.
+          stop();
+        }
+      };
+      // Client disconnect → stop polling immediately (don't run for MAX_MS).
+      req.signal.addEventListener("abort", stop);
 
       let lastStatus: string | null = null;
       const seenAudit = new Set<string>();
@@ -29,12 +57,12 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       const MAX_MS = 5 * 60 * 1000;
 
       const tick = async () => {
+        if (closed) return;
         try {
           const rec = await getRequest(id);
           if (!rec) {
             send("error", { message: "request not found" });
-            clearInterval(timer);
-            controller.close();
+            stop();
             return;
           }
           if (rec.status !== lastStatus) {
@@ -49,18 +77,20 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
             }
           }
           if (TERMINAL.has(rec.status) || rec.status === "blocked" || Date.now() - startedAt > MAX_MS) {
-            clearInterval(timer);
-            controller.close();
+            stop();
           }
         } catch (e) {
           send("error", { message: (e as Error).message });
-          clearInterval(timer);
-          controller.close();
+          stop();
         }
       };
 
-      const timer = setInterval(tick, 1000);
+      timer = setInterval(tick, 1000);
       await tick();
+    },
+    // Reader cancelled (client closed the EventSource) — tear down the poller.
+    cancel() {
+      clear();
     },
   });
 

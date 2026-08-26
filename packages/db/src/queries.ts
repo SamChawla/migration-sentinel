@@ -330,6 +330,9 @@ export interface CreateRequestInput {
   targetDb: string;
   upSql: string;
   downSql: string;
+  /** Natural-language intent — when set (and upSql is empty) the request is an
+   *  nl_intent with NO artifact, so the agent generates the {up,down} pair. */
+  intent?: string;
   requestedBy?: string;
 }
 
@@ -358,19 +361,22 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
       targetId = newTarget.id;
     }
 
+    const isIntent = !input.upSql.trim() && Boolean(input.intent?.trim());
     const [req] = await tx
       .insert(migrationRequest)
       .values({
         targetDatabaseId: targetId,
-        intakeKind: "raw_sql",
-        intakePayload: { sql: input.upSql },
+        intakeKind: isIntent ? "nl_intent" : "raw_sql",
+        intakePayload: isIntent ? { intent: input.intent } : { sql: input.upSql },
         title: input.title,
         status: "received",
         requestedBy: input.requestedBy ?? "unknown",
       })
       .returning();
 
-    if (input.upSql) {
+    // Raw SQL → persist it as the v1 artifact immediately. An nl_intent gets NO
+    // artifact here, so runAgentPipeline's generation stage produces {up,down}.
+    if (!isIntent && input.upSql) {
       await tx.insert(generatedArtifact).values({
         migrationRequestId: req.id,
         version: 1,

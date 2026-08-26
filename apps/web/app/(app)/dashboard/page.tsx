@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Client } from "pg";
 import { listRequests, listAuditEvents, getDashboardStats, getSeverityDistribution } from "@sentinel/db/queries";
 import { SeverityChip, StatusChip } from "@/components/chips";
 import { StatReadout } from "@/components/instruments/Readouts";
@@ -6,13 +7,32 @@ import { timeAgo } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
+/** Real availability probe — a quick connect + SELECT 1 with a short timeout. */
+async function probeDb(url: string | undefined): Promise<boolean> {
+  if (!url) return false;
+  const c = new Client({ connectionString: url, connectionTimeoutMillis: 1500 });
+  try {
+    await c.connect();
+    await c.query("SELECT 1");
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await c.end().catch(() => {});
+  }
+}
+
 export default async function Dashboard() {
-  const [requests, audit, stats, sevDist] = await Promise.all([
+  const [requests, audit, stats, sevDist, targetUp, shadowUp, sentinelUp] = await Promise.all([
     listRequests(),
     listAuditEvents(),
     getDashboardStats(),
     getSeverityDistribution(),
+    probeDb(process.env.TARGET_DB_URL),
+    probeDb(process.env.SHADOW_ADMIN_URL),
+    probeDb(process.env.DATABASE_URL),
   ]);
+  const dot = (up: boolean) => (up ? "ok" : "off");
 
   return (
     <>
@@ -88,9 +108,9 @@ export default async function Dashboard() {
         <section>
           <div className="glass" style={{ marginBottom: 14 }}>
             <h3 className="section-title">Pipeline health</h3>
-            <div className="health-row"><span className="pulse-dot-live ok" /> <span>target-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>:5433 read-only</span></div>
-            <div className="health-row"><span className="pulse-dot-live ok" /> <span>shadow-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>:5434 ephemeral</span></div>
-            <div className="health-row"><span className="pulse-dot-live ok" /> <span>sentinel-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>:5435 control</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${dot(targetUp)}`} /> <span>target-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{targetUp ? ":5433 read-only" : "unreachable"}</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${dot(shadowUp)}`} /> <span>shadow-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{shadowUp ? ":5434 ephemeral" : "unreachable"}</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${dot(sentinelUp)}`} /> <span>sentinel-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{sentinelUp ? ":5435 control" : "unreachable"}</span></div>
             <div className="health-row"><span className="pulse-dot-live warn" /> <span>TrueForge</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>configure key</span></div>
             <div className="health-row"><span className="pulse-dot-live off" /> <span>Qodo</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>advisory</span></div>
           </div>
