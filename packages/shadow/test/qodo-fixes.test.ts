@@ -306,3 +306,31 @@ describe("Round 6 regressions", () => {
     expect(checks[0].probeSql).toContain("deleted_at IS NULL");
   });
 });
+
+describe("Round 7 regressions", () => {
+  it("degrades a per-key-option index to manual review, not invalid SQL (R7 #1)", () => {
+    for (const sql of [
+      "CREATE UNIQUE INDEX i ON t (email DESC NULLS LAST)",
+      "CREATE UNIQUE INDEX i ON t (email text_pattern_ops)",
+      'CREATE UNIQUE INDEX i ON t (email COLLATE "C")',
+    ]) {
+      const checks = requiredPreflightChecks(sql);
+      expect(checks).toHaveLength(1);
+      expect(checks[0].kind).toBe("unique");
+      expect(checks[0].probeSql).toBeNull(); // manual review, not malformed SQL
+    }
+  });
+
+  it("does not invent a predicate from WHERE inside an INCLUDE identifier (R7 #2)", () => {
+    const checks = requiredPreflightChecks('CREATE UNIQUE INDEX i ON t (email) INCLUDE ("where")');
+    expect(checks).toHaveLength(1);
+    // no partial predicate should be attached; probe stays a plain dup check
+    expect(checks[0].probeSql).not.toContain('"where"');
+    expect(checks[0].probeSql).toContain("email IS NOT NULL");
+  });
+
+  it("still builds an exact probe for a plain / expression key (R7 #1/#2)", () => {
+    expect(requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email)")[0].probeSql).toContain("GROUP BY email");
+    expect(requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (lower(email))")[0].probeSql).toContain("GROUP BY lower(email)");
+  });
+});

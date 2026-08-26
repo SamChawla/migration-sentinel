@@ -174,7 +174,14 @@ export async function dumpTargetSchema(targetUrl: string): Promise<string> {
   u.password = "";
   const sanitizedUrl = u.toString();
   const childEnv: NodeJS.ProcessEnv = { ...process.env };
-  if (password) childEnv.PGPASSWORD = decodeURIComponent(password);
+  // Whether the URI actually carried a password FIELD (`user:...@`), which
+  // new URL() can't tell apart from a bare `user@` — both yield "". If the field
+  // is present we must set PGPASSWORD to exactly that value, EVEN WHEN EMPTY,
+  // because we've stripped it from the URI; otherwise pg_dump would silently
+  // authenticate with an unrelated inherited PGPASSWORD. If there was no password
+  // field at all, we leave the inherited env / ~/.pgpass path untouched.
+  const userinfo = targetUrl.match(/^[^:]+:\/\/([^@/?#]*)@/)?.[1] ?? "";
+  if (userinfo.includes(":")) childEnv.PGPASSWORD = decodeURIComponent(password);
 
   const args = ["--schema-only", "--no-owner", "--no-privileges", "--no-comments", "--dbname", sanitizedUrl];
   let lastErr: unknown;

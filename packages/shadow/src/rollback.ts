@@ -137,8 +137,35 @@ export async function schemaFingerprint(
       WHERE s.relkind = 'S' AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
       ORDER BY 1, 2`,
   );
+  // Extensions — CREATE EXTENSION with an empty down leaves the extension (and
+  // all its objects) behind; the column/constraint fingerprint alone misses it.
+  const extensions = await client.query(
+    `SELECT e.extname, e.extversion, n.nspname AS schema
+       FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+      ORDER BY 1`,
+  );
+  // Standalone user-defined types (enums, domains, composite types) — CREATE TYPE
+  // / ALTER TYPE with an incomplete down would otherwise pass rollback proof.
+  const types = await client.query(
+    `SELECT n.nspname AS schema, t.typname, t.typtype,
+            CASE
+              WHEN t.typtype = 'e' THEN (
+                SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
+                  FROM pg_enum e WHERE e.enumtypid = t.oid)
+              WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod)
+              ELSE NULL
+            END AS detail
+       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE ${NS}
+        AND (t.typtype IN ('e', 'd')
+             OR (t.typtype = 'c'
+                 AND EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.typrelid AND c.relkind = 'c')))
+      ORDER BY 1, 2`,
+  );
   const canonical = JSON.stringify({
     schemas: schemas.rows,
+    extensions: extensions.rows,
+    types: types.rows,
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,

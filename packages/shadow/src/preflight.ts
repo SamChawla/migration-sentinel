@@ -114,6 +114,56 @@ function firstBalanced(s: string, openIdx: number): { content: string; end: numb
   return null;
 }
 
+/** True if the string has whitespace at paren-depth 0 outside any quote — i.e. a
+ *  key element carries a per-key option (ASC/DESC, NULLS FIRST/LAST, COLLATE, or
+ *  an operator class like `text_pattern_ops`) rather than being a bare column or
+ *  a single parenthesised expression. Such keys can't be dropped verbatim into a
+ *  probe, so we degrade them to manual review instead of inventing invalid SQL. */
+function hasTopLevelSpace(s: string): boolean {
+  let depth = 0, inS = false, inD = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inS) { if (c === "'") { if (s[i + 1] === "'") i++; else inS = false; } continue; }
+    if (inD) { if (c === '"') { if (s[i + 1] === '"') i++; else inD = false; } continue; }
+    if (c === "'") inS = true;
+    else if (c === '"') inD = true;
+    else if (c === "(") depth++;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0 && /\s/.test(c)) return true;
+  }
+  return false;
+}
+
+/** Parse the tail of a CREATE UNIQUE INDEX after its key list, respecting quotes
+ *  and parenthesised clauses (INCLUDE (...), WITH (...)). Finds the index's own
+ *  top-level NULLS NOT DISTINCT and WHERE — so a `WHERE` that only appears inside
+ *  an INCLUDE ("where") identifier or a WITH option can't invent a partial
+ *  predicate. Returns the raw predicate text (after WHERE) when present. */
+function indexTailClauses(tail: string): { nullsNotDistinct: boolean; predicate?: string } {
+  let depth = 0, inS = false, inD = false;
+  let nullsNotDistinct = false;
+  let predicate: string | undefined;
+  for (let i = 0; i < tail.length; i++) {
+    const c = tail[i];
+    if (inS) { if (c === "'") { if (tail[i + 1] === "'") i++; else inS = false; } continue; }
+    if (inD) { if (c === '"') { if (tail[i + 1] === '"') i++; else inD = false; } continue; }
+    if (c === "'") { inS = true; continue; }
+    if (c === '"') { inD = true; continue; }
+    if (c === "(") { depth++; continue; }
+    if (c === ")") { depth = Math.max(0, depth - 1); continue; }
+    if (depth !== 0) continue;
+    const boundary = i === 0 || /\W/.test(tail[i - 1]);
+    if (!boundary) continue;
+    const rest = tail.slice(i);
+    if (!predicate && /^where\b/i.test(rest)) {
+      predicate = rest.replace(/^where\b/i, "").trim() || undefined;
+      break; // predicate runs to the end of the statement
+    }
+    if (/^nulls\s+not\s+distinct\b/i.test(rest)) nullsNotDistinct = true;
+  }
+  return { nullsNotDistinct, predicate };
+}
+
 export function requiredPreflightChecks(sql: string): PreflightCheck[] {
   const out: PreflightCheck[] = [];
 
@@ -148,12 +198,25 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
       const bal = firstBalanced(stmt, openIdx);
       if (bal) {
         const tail = stmt.slice(bal.end);
+        const keyCols = splitTopLevel(bal.content);
+        // A key with a per-key option (sort order / NULLS / COLLATE / opclass)
+        // can't be dropped verbatim into SELECT/GROUP BY — degrade to manual
+        // review rather than emit invalid probe SQL.
+        if (keyCols.some(hasTopLevelSpace)) {
+          out.push({
+            kind: "unique",
+            table: ciHead[1],
+            probeSql: null,
+            failIfPositive: true,
+            description: `Unique index with per-key options (sort order / COLLATE / operator class) — an exact duplicate probe isn't derivable; manual review.`,
+          });
+          continue;
+        }
         // NULLS NOT DISTINCT makes NULL keys collide too, so they must NOT be
-        // excluded from the duplicate probe (else a duplicate-NULL index that
-        // Postgres will reject reads as willFail:false).
-        const nullsNotDistinct = /^\s*NULLS\s+NOT\s+DISTINCT\b/i.test(tail);
-        const whereM = tail.match(/\bWHERE\b([\s\S]+)/i);
-        uniqueProbe(ciHead[1], bal.content.trim(), nullsNotDistinct, "UNIQUE INDEX", whereM?.[1]);
+        // excluded from the duplicate probe; WHERE/NULLS are located structurally
+        // (skipping INCLUDE(...)/WITH(...) and quoted identifiers).
+        const { nullsNotDistinct, predicate } = indexTailClauses(tail);
+        uniqueProbe(ciHead[1], bal.content.trim(), nullsNotDistinct, "UNIQUE INDEX", predicate);
         continue;
       }
     }
