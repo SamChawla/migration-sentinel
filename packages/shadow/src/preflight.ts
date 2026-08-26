@@ -49,11 +49,13 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
   const out: PreflightCheck[] = [];
 
   for (const stmt of splitStatements(sql)) {
-    const tableM = stmt.match(/ALTER\s+TABLE\s+(?:ONLY\s+)?([\w.\"]+)/i);
+    // Accept the full ALTER TABLE modifier set: IF EXISTS and ONLY may precede
+    // the table identifier. Missing these made valid statements produce no probe.
+    const tableM = stmt.match(/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w.\"]+)/i);
     const table = tableM?.[1] ?? "";
 
     // SET NOT NULL
-    let m = stmt.match(/ALTER\s+TABLE\s+(?:ONLY\s+)?([\w.\"]+)\s+ALTER\s+(?:COLUMN\s+)?([\w\"]+)\s+SET\s+NOT\s+NULL/i);
+    let m = stmt.match(/ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w.\"]+)\s+ALTER\s+(?:COLUMN\s+)?([\w\"]+)\s+SET\s+NOT\s+NULL/i);
     if (m) {
       const [, t, c] = m;
       out.push({
@@ -78,16 +80,24 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
       continue;
     }
 
+    // A constraint added NOT VALID does not validate existing rows, so there is
+    // nothing to pre-flight — probing it would raise a false failure.
+    const notValid = /\bNOT\s+VALID\b/i.test(stmt);
+
     // ADD UNIQUE (cols)
     m = stmt.match(/ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?UNIQUE\s*\(([^)]+)\)/i);
     if (m) {
       const cols = m[1].trim();
+      const colList = cols.split(",").map((x) => x.trim());
+      // Under the default NULLS DISTINCT, rows with any NULL key never collide,
+      // so exclude them or a table full of NULLs reads as a duplicate.
+      const notNull = colList.map((c) => `${c} IS NOT NULL`).join(" AND ");
       out.push({
         kind: "unique",
         table,
-        probeSql: `SELECT count(*) AS violations FROM (SELECT ${cols} FROM ${table} GROUP BY ${cols} HAVING count(*) > 1) dup`,
+        probeSql: `SELECT count(*) AS violations FROM (SELECT ${cols} FROM ${table} WHERE ${notNull} GROUP BY ${cols} HAVING count(*) > 1) dup`,
         failIfPositive: true,
-        description: `Duplicate (${cols}) values will block the UNIQUE constraint.`,
+        description: `Duplicate non-null (${cols}) values will block the UNIQUE constraint.`,
       });
       continue;
     }
@@ -95,6 +105,7 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
     // ADD CHECK (expr)
     m = stmt.match(/ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?CHECK\s*\((.+?)\)\s*(?:NOT\s+VALID)?\s*$/i);
     if (m) {
+      if (notValid) continue;
       const expr = m[1].trim();
       out.push({
         kind: "check",
@@ -106,18 +117,21 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
       continue;
     }
 
-    // ADD FOREIGN KEY (col) REFERENCES parent(pcol)
+    // ADD FOREIGN KEY (cols) REFERENCES parent(pcols) — composite-aware.
     m = stmt.match(/ADD\s+(?:CONSTRAINT\s+[\w\"]+\s+)?FOREIGN\s+KEY\s*\(([^)]+)\)\s*REFERENCES\s+([\w.\"]+)\s*\(([^)]+)\)/i);
     if (m) {
+      if (notValid) continue;
       const [, col, ptable, pcol] = m;
-      const c = col.trim();
-      const pc = pcol.trim();
+      const cols = col.split(",").map((x) => x.trim());
+      const pcols = pcol.split(",").map((x) => x.trim());
+      const notNull = cols.map((c) => `c.${c} IS NOT NULL`).join(" AND ");
+      const join = cols.map((c, i) => `p.${pcols[i]} = c.${c}`).join(" AND ");
       out.push({
         kind: "foreign_key",
         table,
-        probeSql: `SELECT count(*) AS violations FROM ${table} c WHERE c.${c} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM ${ptable} p WHERE p.${pc} = c.${c})`,
+        probeSql: `SELECT count(*) AS violations FROM ${table} c WHERE ${notNull} AND NOT EXISTS (SELECT 1 FROM ${ptable} p WHERE ${join})`,
         failIfPositive: true,
-        description: `Orphan rows with no matching ${ptable}.${pc} will block the foreign key.`,
+        description: `Orphan rows with no matching ${ptable}(${pcol}) will block the foreign key.`,
       });
       continue;
     }

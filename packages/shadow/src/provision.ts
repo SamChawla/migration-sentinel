@@ -45,33 +45,41 @@ export async function provisionShadow(opts: ProvisionOptions): Promise<ShadowHan
     await admin.end();
   }
 
+  const dropDatabase = async () => {
+    const a = new Client({ connectionString: opts.adminUrl });
+    await a.connect();
+    try {
+      // terminate any stragglers, then drop
+      await a.query(
+        `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
+        [ref],
+      );
+      await a.query(`DROP DATABASE IF EXISTS ${ref}`);
+    } finally {
+      await a.end();
+    }
+  };
+
   const url = withDbName(opts.adminUrl, ref);
   const shadow = new Client({ connectionString: url });
-  await shadow.connect();
   try {
+    await shadow.connect();
     await shadow.query(opts.schemaSql);
+  } catch (e) {
+    // Seeding failed — the CREATE DATABASE already succeeded, so drop it now or
+    // it leaks. Best-effort cleanup, then surface the original error.
+    await shadow.end().catch(() => {});
+    await dropDatabase().catch(() => {});
+    throw e;
   } finally {
-    await shadow.end();
+    await shadow.end().catch(() => {});
   }
 
   return {
     ref,
     url,
     seededWithData: opts.seededWithData ?? false,
-    destroy: async () => {
-      const a = new Client({ connectionString: opts.adminUrl });
-      await a.connect();
-      try {
-        // terminate any stragglers, then drop
-        await a.query(
-          `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()`,
-          [ref],
-        );
-        await a.query(`DROP DATABASE IF EXISTS ${ref}`);
-      } finally {
-        await a.end();
-      }
-    },
+    destroy: dropDatabase,
   };
 }
 

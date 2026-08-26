@@ -60,28 +60,104 @@ const REVERSIBILITY_RANK: Record<Reversibility, number> = {
   irreversible: 2,
 };
 
-/** Split a SQL blob into individual statements (naive but adequate: ignores
- *  semicolons inside string/dollar-quoted literals). */
+/**
+ * Split a SQL blob into individual statements with a small state-machine lexer
+ * that is aware of single-quoted strings (with '' escapes), dollar-quoted bodies
+ * ($tag$ ... $tag$), and line/block comments. Only a `;` seen in ordinary code
+ * — never inside a string, dollar-quote, or comment — separates statements.
+ *
+ * This matters for safety, not just tidiness: a naive regex that strips comment
+ * markers can merge across string literals and HIDE chained statements from the
+ * read-only guard (a query that opens a block-comment marker inside one string
+ * literal and closes it inside a later one, hiding a DELETE between them). A real
+ * lexer keeps each statement intact so the guard sees them all.
+ */
 export function splitStatements(sql: string): string[] {
-  const withoutComments = sql
-    .replace(/--[^\n]*/g, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
-  return withoutComments
-    .split(/;\s*(?=(?:[^']*'[^']*')*[^']*$)/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const statements: string[] = [];
+  let current = "";
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i];
+    const two = sql.slice(i, i + 2);
+
+    if (two === "--") {
+      const nl = sql.indexOf("\n", i);
+      i = nl === -1 ? n : nl;
+      current += " ";
+      continue;
+    }
+    if (two === "/*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? n : end + 2;
+      current += " ";
+      continue;
+    }
+    if (ch === "'") {
+      current += ch;
+      i++;
+      while (i < n) {
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          current += "''";
+          i += 2;
+          continue;
+        }
+        current += sql[i];
+        if (sql[i] === "'") {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === "$") {
+      const tag = sql.slice(i).match(/^\$[A-Za-z_0-9]*\$/)?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, i + tag.length);
+        const stop = end === -1 ? n : end + tag.length;
+        current += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
+    }
+    if (ch === ";") {
+      const t = current.trim();
+      if (t) statements.push(t);
+      current = "";
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  const last = current.trim();
+  if (last) statements.push(last);
+  return statements;
+}
+
+/** Blank the contents of string/dollar-quoted literals so keyword checks never
+ *  match text INSIDE a literal (e.g. the word WHERE inside a string value). */
+export function codeOnly(sql: string): string {
+  return sql
+    .replace(/\$([A-Za-z_0-9]*)\$[\s\S]*?\$\1\$/g, "''")
+    .replace(/'(?:[^']|'')*'/g, "''");
 }
 
 export function classifyStatement(statement: string): StatementClassification {
   const s = statement.trim();
-  const u = s.toUpperCase().replace(/\s+/g, " ");
+  // Keyword checks run on the code-only form so a keyword INSIDE a string
+  // literal (e.g. a literal "WHERE" in an UPDATE ... SET note = 'x WHERE y')
+  // never masks an actually-unbounded statement.
+  const code = codeOnly(s);
+  const u = code.toUpperCase().replace(/\s+/g, " ");
 
   // Whole-dataset destruction with no recovery path → Sentinel refuses it
   // outright. A DROP COLUMN is irreversible too, but it is a scoped, named loss
   // the operator can accept with a typed confirmation, so it is NOT blocking.
   const isWholeObjectDestroy = /\bDROP\s+TABLE\b/.test(u) || /\bTRUNCATE\b/.test(u);
   const isUnboundedDml =
-    (/^\s*UPDATE\b/i.test(s) || /^\s*DELETE\b/i.test(s)) && !/\bWHERE\b/.test(u);
+    (/^\s*UPDATE\b/i.test(code) || /^\s*DELETE\b/i.test(code)) && !/\bWHERE\b/.test(u);
 
   const make = (
     severity: Severity,
@@ -107,9 +183,14 @@ export function classifyStatement(statement: string): StatementClassification {
   if (/\bDROP\s+COLUMN\b/.test(u))
     return make("red", "irreversible", true, "Drops a column — column data is unrecoverable.", "AccessExclusiveLock");
 
+  // INSERT — adds rows. A schema-only rollback does NOT remove them, so it is
+  // data-mutating (rollbackVerified must be false) even though it is additive.
+  if (/^\s*INSERT\b/i.test(code))
+    return make("amber", "lossy", true, "INSERT — adds rows; a schema-only rollback does not remove them.", "RowExclusiveLock");
+
   // UPDATE / DELETE — danger depends on presence of a WHERE clause.
-  if (/^\s*UPDATE\b/i.test(s) || /^\s*DELETE\b/i.test(s)) {
-    const verb = /^\s*UPDATE/i.test(s) ? "UPDATE" : "DELETE";
+  if (/^\s*UPDATE\b/i.test(code) || /^\s*DELETE\b/i.test(code)) {
+    const verb = /^\s*UPDATE/i.test(code) ? "UPDATE" : "DELETE";
     const hasWhere = /\bWHERE\b/.test(u);
     if (!hasWhere)
       return make(

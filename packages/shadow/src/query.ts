@@ -16,7 +16,7 @@ import type { Client } from "pg";
 import { splitStatements } from "./blast";
 
 const FORBIDDEN =
-  /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|CREATE|GRANT|REVOKE|COPY|CALL|DO|VACUUM|REINDEX|CLUSTER|LOCK|COMMENT|SECURITY\s+LABEL|REFRESH|SET|RESET)\b/i;
+  /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|CREATE|GRANT|REVOKE|COPY|CALL|DO|VACUUM|REINDEX|CLUSTER|LOCK|COMMENT|SECURITY\s+LABEL|REFRESH|SET|RESET|BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK|SAVEPOINT|ABORT)\b/i;
 
 export class ReadOnlyViolation extends Error {}
 
@@ -58,13 +58,20 @@ export async function runReadOnlyQuery(
   const timeoutMs = opts.timeoutMs ?? 5000;
   const rowCap = opts.rowCap ?? 500;
 
+  // Cap at the DATABASE, not in memory: wrapping the validated read in a
+  // subquery with LIMIT means Postgres never streams more than rowCap+1 rows
+  // back, so a `SELECT * FROM huge_table` can't buffer the whole table.
+  const inner = sql.trim().replace(/;\s*$/, "");
+  const capped = `SELECT * FROM (${inner}) AS _capped LIMIT ${Number(rowCap) + 1}`;
+
   await client.query("BEGIN");
   try {
     await client.query("SET TRANSACTION READ ONLY");
     await client.query(`SET LOCAL statement_timeout = ${Number(timeoutMs)}`);
-    const res = await client.query(sql);
-    const rows = res.rows.slice(0, rowCap);
-    return { sql, rows, truncated: res.rows.length > rowCap };
+    const res = await client.query(capped);
+    const truncated = res.rows.length > rowCap;
+    const rows = truncated ? res.rows.slice(0, rowCap) : res.rows;
+    return { sql, rows, truncated };
   } finally {
     await client.query("ROLLBACK");
   }

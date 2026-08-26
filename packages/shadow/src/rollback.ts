@@ -48,16 +48,32 @@ export async function schemaFingerprint(
       ORDER BY table_name, column_name`,
     [schema],
   );
+  // Full constraint DEFINITIONS (not just name+type): a down migration that
+  // recreates a CHECK/FK/UNIQUE under the same name but a different definition
+  // must change the fingerprint.
   const constraints = await client.query(
-    `SELECT tc.table_name, tc.constraint_name, tc.constraint_type
-       FROM information_schema.table_constraints tc
-      WHERE tc.table_schema = $1
-      ORDER BY tc.table_name, tc.constraint_name`,
+    `SELECT c.conrelid::regclass::text AS table_name,
+            c.conname AS constraint_name,
+            pg_get_constraintdef(c.oid) AS definition
+       FROM pg_constraint c
+       JOIN pg_namespace n ON n.oid = c.connamespace
+      WHERE n.nspname = $1
+      ORDER BY 1, 2`,
+    [schema],
+  );
+  // Indexes are migration-relevant too — a down that rebuilds an index on the
+  // wrong columns restores the columns but not the index.
+  const indexes = await client.query(
+    `SELECT tablename, indexname, indexdef
+       FROM pg_indexes
+      WHERE schemaname = $1
+      ORDER BY tablename, indexname`,
     [schema],
   );
   const canonical = JSON.stringify({
     columns: columns.rows,
     constraints: constraints.rows,
+    indexes: indexes.rows,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
