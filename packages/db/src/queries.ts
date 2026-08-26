@@ -332,61 +332,67 @@ export interface CreateRequestInput {
  * Returns the hydrated record.
  */
 export async function createRequest(input: CreateRequestInput): Promise<RequestRecord> {
-  const targetRows = await db
-    .select()
-    .from(targetDatabase)
-    .where(eq(targetDatabase.connectionAlias, input.targetDb))
-    .limit(1);
+  // Atomic: target + request + artifact + approval + audit all commit together
+  // or not at all — a mid-way failure never leaves a half-created request.
+  const reqId = await db.transaction(async (tx) => {
+    const targetRows = await tx
+      .select()
+      .from(targetDatabase)
+      .where(eq(targetDatabase.connectionAlias, input.targetDb))
+      .limit(1);
 
-  let targetId: string;
-  if (targetRows.length > 0) {
-    targetId = targetRows[0].id;
-  } else {
-    const [newTarget] = await db
-      .insert(targetDatabase)
-      .values({ name: input.targetDb, connectionAlias: input.targetDb })
+    let targetId: string;
+    if (targetRows.length > 0) {
+      targetId = targetRows[0].id;
+    } else {
+      const [newTarget] = await tx
+        .insert(targetDatabase)
+        .values({ name: input.targetDb, connectionAlias: input.targetDb })
+        .returning();
+      targetId = newTarget.id;
+    }
+
+    const [req] = await tx
+      .insert(migrationRequest)
+      .values({
+        targetDatabaseId: targetId,
+        intakeKind: "raw_sql",
+        intakePayload: { sql: input.upSql },
+        title: input.title,
+        status: "received",
+        requestedBy: input.requestedBy ?? "unknown",
+      })
       .returning();
-    targetId = newTarget.id;
-  }
 
-  const [req] = await db
-    .insert(migrationRequest)
-    .values({
-      targetDatabaseId: targetId,
-      intakeKind: "raw_sql",
-      intakePayload: { sql: input.upSql },
-      title: input.title,
-      status: "received",
-      requestedBy: input.requestedBy ?? "unknown",
-    })
-    .returning();
+    if (input.upSql) {
+      await tx.insert(generatedArtifact).values({
+        migrationRequestId: req.id,
+        version: 1,
+        upSql: input.upSql,
+        downSql: input.downSql,
+        reversibility: "reversible",
+        model: "user-supplied",
+      });
+    }
 
-  if (input.upSql) {
-    await db.insert(generatedArtifact).values({
+    await tx.insert(approval).values({
       migrationRequestId: req.id,
-      version: 1,
-      upSql: input.upSql,
-      downSql: input.downSql,
-      reversibility: "reversible",
-      model: "user-supplied",
+      decision: "pending",
+      requiresTypedConfirm: false,
     });
-  }
 
-  await db.insert(approval).values({
-    migrationRequestId: req.id,
-    decision: "pending",
-    requiresTypedConfirm: false,
+    await tx.insert(auditEvent).values({
+      migrationRequestId: req.id,
+      actor: input.requestedBy ?? "unknown",
+      action: "request.created",
+      detail: `"${input.title}" submitted to the agent.`,
+      tone: "neutral",
+    });
+
+    return req.id;
   });
 
-  await insertAuditEvent({
-    migrationRequestId: req.id,
-    actor: input.requestedBy ?? "unknown",
-    action: "request.created",
-    detail: `"${input.title}" submitted to the agent.`,
-    tone: "neutral",
-  });
-
-  const record = await getRequest(req.id);
+  const record = await getRequest(reqId);
   return record!;
 }
 
@@ -397,35 +403,47 @@ export async function recordApproval(input: {
   requestId: string;
   decision: "approved" | "rejected";
   approver: string;
-  typedConfirm?: string;
 }): Promise<void> {
-  await db
-    .update(approval)
-    .set({
-      decision: input.decision,
-      approver: input.approver,
-      decidedAt: new Date(),
-    })
-    .where(eq(approval.migrationRequestId, input.requestId));
+  // Typed-confirm is NOT recorded here — it is verified at the gate by
+  // assertApproved() (core/gate.ts) before this is ever called. Recording the
+  // decision + status is atomic so they can never disagree.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(approval)
+      .set({
+        decision: input.decision,
+        approver: input.approver,
+        decidedAt: new Date(),
+      })
+      .where(eq(approval.migrationRequestId, input.requestId));
 
-  // Approved → 'approved' (NOT 'applied'). The guarded apply executor owns the
-  // transition to 'applying'/'applied'/'failed' once it has actually run the UP
-  // against the target. Rejected is terminal here.
-  const newStatus = input.decision === "approved" ? "approved" : "rejected";
-  await db
-    .update(migrationRequest)
-    .set({ status: newStatus, updatedAt: new Date() })
-    .where(eq(migrationRequest.id, input.requestId));
+    // Approved → 'approved' (NOT 'applied'). The guarded apply executor owns the
+    // transition to 'applying'/'applied'/'failed' once it has actually run the UP
+    // against the target. Rejected is terminal here.
+    const newStatus = input.decision === "approved" ? "approved" : "rejected";
+    await tx
+      .update(migrationRequest)
+      .set({ status: newStatus, updatedAt: new Date() })
+      .where(eq(migrationRequest.id, input.requestId));
+  });
 }
 
 /**
- * Reset approval to pending (used when gate check fails).
+ * Reset approval to pending (used when the gate check fails). Reverts BOTH the
+ * approval decision and the request status back to awaiting_approval so a
+ * rejected gate check never leaves the request looking approved.
  */
 export async function resetApproval(requestId: string): Promise<void> {
-  await db
-    .update(approval)
-    .set({ decision: "pending", approver: null, decidedAt: null })
-    .where(eq(approval.migrationRequestId, requestId));
+  await db.transaction(async (tx) => {
+    await tx
+      .update(approval)
+      .set({ decision: "pending", approver: null, decidedAt: null })
+      .where(eq(approval.migrationRequestId, requestId));
+    await tx
+      .update(migrationRequest)
+      .set({ status: "awaiting_approval", updatedAt: new Date() })
+      .where(eq(migrationRequest.id, requestId));
+  });
 }
 
 // ── Pipeline persistence (agent orchestrator writes these) ────────────────
@@ -497,20 +515,31 @@ export async function upsertGeneratedArtifact(input: {
   reversibility?: Reversibility;
   model: string;
 }): Promise<ArtifactRow> {
-  const existing = await getLatestArtifact(input.requestId);
-  const version = (existing?.version ?? 0) + 1;
-  const [a] = await db
-    .insert(generatedArtifact)
-    .values({
-      migrationRequestId: input.requestId,
-      version,
-      upSql: input.upSql,
-      downSql: input.downSql,
-      plainSummary: input.plainSummary ?? null,
-      reversibility: input.reversibility ?? "reversible",
-      model: input.model,
-    })
-    .returning();
+  // Read-max-then-insert in one transaction. The unique index on
+  // (migration_request_id, version) is the ultimate guard: a concurrent writer
+  // that computed the same version fails the insert rather than duplicating.
+  const a = await db.transaction(async (tx) => {
+    const [existing] = await tx
+      .select({ version: generatedArtifact.version })
+      .from(generatedArtifact)
+      .where(eq(generatedArtifact.migrationRequestId, input.requestId))
+      .orderBy(desc(generatedArtifact.version))
+      .limit(1);
+    const version = (existing?.version ?? 0) + 1;
+    const [row] = await tx
+      .insert(generatedArtifact)
+      .values({
+        migrationRequestId: input.requestId,
+        version,
+        upSql: input.upSql,
+        downSql: input.downSql,
+        plainSummary: input.plainSummary ?? null,
+        reversibility: input.reversibility ?? "reversible",
+        model: input.model,
+      })
+      .returning();
+    return row;
+  });
   return { id: a.id, version: a.version, upSql: a.upSql, downSql: a.downSql };
 }
 
@@ -555,11 +584,21 @@ export interface PersistSafetyInput {
  * Console renders.
  */
 export async function persistSafetyReport(input: PersistSafetyInput): Promise<void> {
-  const artifact = await getLatestArtifact(input.requestId);
+  // The whole report is one transaction: shadow_run, blast_report, findings,
+  // preflight, qodo_review, the artifact update, the gate arming, and the status
+  // advance all commit together. A partial failure never leaves the Approval
+  // Console rendering half a report.
+  await db.transaction(async (tx) => {
+  const [artifact] = await tx
+    .select({ id: generatedArtifact.id })
+    .from(generatedArtifact)
+    .where(eq(generatedArtifact.migrationRequestId, input.requestId))
+    .orderBy(desc(generatedArtifact.version))
+    .limit(1);
   if (!artifact) throw new Error(`persistSafetyReport: no artifact for request ${input.requestId}`);
 
   const now = new Date();
-  const [shadow] = await db
+  const [shadow] = await tx
     .insert(shadowRun)
     .values({
       migrationRequestId: input.requestId,
@@ -577,7 +616,7 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
     .returning();
 
   const tablesTouched = Array.from(new Set(input.preflight.map((p) => p.table).filter(Boolean)));
-  const [blast] = await db
+  const [blast] = await tx
     .insert(blastReport)
     .values({
       shadowRunId: shadow.id,
@@ -587,7 +626,7 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
     .returning();
 
   if (input.findings.length > 0) {
-    await db.insert(blastFinding).values(
+    await tx.insert(blastFinding).values(
       input.findings.map((f, i) => ({
         blastReportId: blast.id,
         statementIndex: i,
@@ -600,7 +639,7 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
   }
 
   if (input.preflight.length > 0) {
-    await db.insert(preflightResult).values(
+    await tx.insert(preflightResult).values(
       input.preflight.map((p) => ({
         shadowRunId: shadow.id,
         kind: p.kind as
@@ -619,7 +658,7 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
     );
   }
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: artifact.id,
     verdict: input.qodo.verdict,
     summary: input.qodo.summary ?? null,
@@ -627,12 +666,12 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
     raw: input.qodo.raw ?? null,
   });
 
-  await db
+  await tx
     .update(generatedArtifact)
     .set({ reversibility: input.reversibility })
     .where(eq(generatedArtifact.id, artifact.id));
 
-  await db
+  await tx
     .update(approval)
     .set({
       requiresTypedConfirm: input.requiresTypedConfirm,
@@ -640,7 +679,11 @@ export async function persistSafetyReport(input: PersistSafetyInput): Promise<vo
     })
     .where(eq(approval.migrationRequestId, input.requestId));
 
-  await setRequestStatus(input.requestId, input.status);
+    await tx
+      .update(migrationRequest)
+      .set({ status: input.status, updatedAt: new Date() })
+      .where(eq(migrationRequest.id, input.requestId));
+  });
 }
 
 // ── Apply-run persistence (guarded executor writes these) ─────────────────
