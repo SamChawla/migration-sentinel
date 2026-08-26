@@ -5,17 +5,26 @@ import Link from "next/link";
 
 export default function Login() {
   const router = useRouter();
-  const [username, setUsername] = useState("admin");
-  const [password, setPassword] = useState("admin");
+  const [username, setUsername] = useState("approver");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function signIn(asUser?: string) {
     setBusy(true);
-    await fetch("/api/auth/login", {
+    setError(null);
+    const res = await fetch("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: asUser ?? username }),
+      // The password field carries the APPROVER_TOKEN — the API validates it.
+      body: JSON.stringify({ username: asUser ?? username, token: password }),
     });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setBusy(false);
+      setError(body.error ?? "Sign-in failed.");
+      return;
+    }
     router.push("/dashboard");
     router.refresh();
   }
@@ -47,22 +56,19 @@ export default function Login() {
             <label className="lbl" htmlFor="u">Username</label>
             <input id="u" className="field" style={{ marginBottom: 14 }} value={username}
               onChange={(e) => setUsername(e.target.value)} autoComplete="username" />
-            <label className="lbl" htmlFor="p">Password</label>
-            <input id="p" className="field" type="password" style={{ marginBottom: 20 }} value={password}
-              onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+            <label className="lbl" htmlFor="p">Approver token</label>
+            <input id="p" className="field" type="password" style={{ marginBottom: error ? 10 : 20 }} value={password}
+              onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" placeholder="APPROVER_TOKEN" />
+            {error && <div className="inline-error" role="alert" style={{ marginBottom: 16 }}>{error}</div>}
             <button className="btn btn-cyan" type="submit" disabled={busy}
               style={{ width: "100%", textTransform: "uppercase", letterSpacing: ".06em" }}>
               {busy ? "Signing in..." : "Sign in"}
             </button>
           </form>
 
-          <div className="login-divider">demo access</div>
-          <button className="btn" style={{ width: "100%" }} disabled={busy} onClick={() => void signIn("admin")}>
-            Continue as demo admin
-          </button>
-
           <p className="login-hint">
-            Demo build — any credentials work. Default: <span className="mono">admin / admin</span>.
+            Single-approver console — sign in with the <span className="mono">APPROVER_TOKEN</span> configured for
+            this deployment.
             <br />Approvals are enforced server-side by the gate.
           </p>
         </div>

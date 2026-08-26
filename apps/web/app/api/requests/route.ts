@@ -6,6 +6,9 @@ import { getSession } from "@/lib/auth";
 export const runtime = "nodejs";
 
 export async function GET() {
+  // Migration SQL + target details are not public — require an approver session.
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   const records = await listRequests();
   return NextResponse.json(records);
 }

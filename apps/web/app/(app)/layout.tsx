@@ -1,19 +1,20 @@
 import type { ReactNode } from "react";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { DeckShell } from "@/components/deck/DeckShell";
 import { getDashboardStats } from "@sentinel/db/queries";
+import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
-  const jar = await cookies();
-  const session = jar.get("ms_auth");
+  // Validate the real session (ms_session === APPROVER_TOKEN), not the display
+  // cookie — a forged display cookie must not grant access to the console.
+  const session = await getSession();
   if (!session) redirect("/login");
 
   const stats = await getDashboardStats();
   return (
-    <DeckShell pendingCount={stats.awaiting} userName={decodeURIComponent(session?.value ?? "") || "Demo Admin"}>
+    <DeckShell pendingCount={stats.awaiting} userName={session.user}>
       {children}
     </DeckShell>
   );
