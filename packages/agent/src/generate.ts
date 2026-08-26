@@ -90,6 +90,12 @@ export async function generateMigration(params: GenerateParams): Promise<Generat
   if (!json || typeof json.up !== "string" || typeof json.down !== "string") {
     throw new Error(`TrueForge generation returned no valid {up,down} JSON. Got: ${text.slice(0, 200)}`);
   }
+  // A blank up is NOT a migration — accepting "" would sail through as green and
+  // schema-restoring, and the executor would mark the request applied even though
+  // the requested change never happened. Reject it so the pipeline fails loudly.
+  if (!json.up.trim()) {
+    throw new Error("TrueForge generation returned an empty up migration — nothing to apply.");
+  }
   return {
     up: json.up,
     down: json.down,

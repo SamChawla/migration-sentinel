@@ -25,6 +25,23 @@ import {
   insertAuditEvent,
 } from "@sentinel/db/queries";
 
+/**
+ * True when the migration contains a statement that CANNOT run inside a
+ * transaction block (CREATE INDEX CONCURRENTLY, VACUUM, ALTER TYPE ... ADD
+ * VALUE, etc.), forcing the autocommit apply path. Detection runs on CODE only —
+ * comments are stripped (splitStatements) and string/dollar literals blanked
+ * (codeOnly) — so a keyword that appears only in a `-- CONCURRENTLY` comment or a
+ * string literal can't misclassify an otherwise-transactional migration.
+ */
+export function isNonTransactional(upSql: string): boolean {
+  const code = splitStatements(upSql).map(codeOnly).join("\n");
+  return (
+    /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
+      code,
+    ) || /\bALTER\s+TYPE\b[\s\S]*\bADD\s+VALUE\b/i.test(code)
+  );
+}
+
 export interface ApplyOptions {
   /** @deprecated Ignored — the apply always binds to the request's analyzed
    *  target (getRequestTargetUrl). A caller cannot redirect the write. */
@@ -97,10 +114,9 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   // CREATE INDEX CONCURRENTLY (and a few others) cannot run inside a transaction
   // block. Those run in autocommit — there is no atomic rollback for them, by
   // PostgreSQL's own design, so a later failure can leave earlier DDL committed.
-  const nonTransactional =
-    /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
-      codeOnly(artifact.upSql),
-    ) || /\bALTER\s+TYPE\b[\s\S]*\bADD\s+VALUE\b/i.test(codeOnly(artifact.upSql));
+  // Detection (isNonTransactional) ignores comments/strings so a keyword buried
+  // in a comment can't force the non-atomic autocommit path.
+  const nonTransactional = isNonTransactional(artifact.upSql);
 
   // Everything after the claim is guarded: ANY failure (run-row insert, connect,
   // execution, or bookkeeping) lands the request in a definite 'failed' state

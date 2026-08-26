@@ -110,12 +110,16 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
     throw new Error(`runAgentPipeline: request ${requestId} not claimable (status=${req.status}); already running or past intake.`);
   }
 
-  const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));
-  if (!targetUrl) throw new Error("runAgentPipeline: no target URL (set TARGET_DB_URL or target.connection_url)");
-  const shadowAdminUrl = opts.shadowAdminUrl ?? process.env.SHADOW_ADMIN_URL;
-  if (!shadowAdminUrl) throw new Error("runAgentPipeline: SHADOW_ADMIN_URL not set");
-
   try {
+    // Resolve required configuration INSIDE the failure handler — the request is
+    // already claimed ('generating'), so a missing target/shadow URL (or a lookup
+    // failure) must land it in 'failed' with an audit event, not strand it in
+    // 'generating' forever where no retry can re-claim a non-'received' request.
+    const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));
+    if (!targetUrl) throw new Error("runAgentPipeline: no target URL (set TARGET_DB_URL or target.connection_url)");
+    const shadowAdminUrl = opts.shadowAdminUrl ?? process.env.SHADOW_ADMIN_URL;
+    if (!shadowAdminUrl) throw new Error("runAgentPipeline: SHADOW_ADMIN_URL not set");
+
     // 1 ── ensure we have a {up, down} to analyze.
     let artifact = await getLatestArtifact(requestId);
     if (!artifact || !artifact.upSql.trim()) {
