@@ -466,6 +466,7 @@ export async function recordApproval(input: {
  * one caller must NEVER erase a valid approval that another caller has already
  * recorded and CLAIMED for apply — resetting an 'approved'/'applying' request
  * would leave the executor committing while the DB shows the approval as pending.
+ * A terminally 'blocked' request also stays blocked (the guard excludes it).
  * Returns whether it actually reset anything.
  */
 export async function resetApproval(requestId: string): Promise<boolean> {

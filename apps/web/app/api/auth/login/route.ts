@@ -20,7 +20,15 @@ export async function POST(req: Request) {
 
   const name = typeof username === "string" && username.trim() ? username.trim() : "approver";
   const res = NextResponse.json({ ok: true, user: name });
-  const cookieOpts = { path: "/", httpOnly: true, sameSite: "lax" as const, maxAge: 60 * 60 * 24 * 7 };
+  // httpOnly + Secure (in production) so the session credential is never exposed
+  // to JS or sent in cleartext over HTTP.
+  const cookieOpts = {
+    path: "/",
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    maxAge: 60 * 60 * 24 * 7,
+  };
   res.cookies.set(SESSION_COOKIE_NAME, encodeURIComponent(String(token)), cookieOpts);
   res.cookies.set(USER_COOKIE_NAME, encodeURIComponent(name), cookieOpts);
   return res;

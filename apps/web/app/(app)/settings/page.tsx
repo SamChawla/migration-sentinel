@@ -1,3 +1,5 @@
+import { getSession } from "@/lib/auth";
+
 export const dynamic = "force-dynamic";
 
 function Row({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -12,7 +14,16 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: stri
   );
 }
 
-export default function Settings() {
+export default async function Settings() {
+  const session = await getSession();
+  const user = session?.user ?? "approver";
+  const initials =
+    user
+      .split(/[\s@._-]+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((s) => s[0]?.toUpperCase() ?? "")
+      .join("") || "A";
   return (
     <>
       <div className="page-head">
@@ -27,10 +38,10 @@ export default function Settings() {
       <div className="glass" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Profile</h3>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span className="rail-user" style={{ width: 44, height: 44, fontSize: 15 }}>SC</span>
+          <span className="rail-user" style={{ width: 44, height: 44, fontSize: 15 }}>{initials}</span>
           <div>
-            <div style={{ fontWeight: 600, fontSize: 14 }}>Sam Chawla</div>
-            <div style={{ fontSize: 12, color: "var(--muted)" }}>sam.chawla26@gmail.com</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>{user}</div>
+            <div style={{ fontSize: 12, color: "var(--muted)" }}>Signed in as approver</div>
           </div>
           <span className="sev-chip sev-green" style={{ marginLeft: "auto", fontSize: 12 }}>✓ Approver</span>
         </div>

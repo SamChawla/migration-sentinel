@@ -26,10 +26,13 @@ export async function POST(req: Request) {
   if (!title || !targetDb) {
     return NextResponse.json({ error: "title and targetDb are required." }, { status: 400 });
   }
-  // Exactly one of raw SQL or a natural-language intent — NL is generated into
+  // EXACTLY one of raw SQL or a natural-language intent — NL is generated into
   // a {up,down} pair by the agent and is never executed verbatim as SQL.
   if (!upSql.trim() && !intent) {
     return NextResponse.json({ error: "Provide either SQL (upSql) or a natural-language intent." }, { status: 400 });
+  }
+  if (upSql.trim() && intent) {
+    return NextResponse.json({ error: "Provide SQL or intent, not both." }, { status: 400 });
   }
 
   const rec = await createRequest({ title, targetDb, upSql, downSql, intent, requestedBy: session.user });
