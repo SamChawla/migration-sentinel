@@ -8,6 +8,7 @@ import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readout
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
 import { Db3D } from "@/components/scene/Db3D";
+import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 
@@ -180,6 +181,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
     hasBlockingStatement: cls.hasBlockingStatement,
     dataWillFail,
     dataUnknown,
+    rollbackVerified: r.rollbackVerified,
   });
   const blocked = disposition === "blocked";
   const decidable = r.status === "awaiting_approval" || r.status === "blocked";
@@ -188,6 +190,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
 
   return (
     <>
+      <AutoRefresh status={r.status} />
       <Link href="/requests" style={{ fontSize: 12, color: "var(--muted)" }}>← All migrations</Link>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "8px 0 14px" }}>
         <h1 style={{ margin: 0 }}>{r.title}</h1>

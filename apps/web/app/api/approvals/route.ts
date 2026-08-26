@@ -3,6 +3,7 @@ import { getRequest, recordApproval, resetApproval, insertAuditEvent } from "@se
 import { assertApproved, GateError } from "@sentinel/core";
 import { classifyMigration } from "@sentinel/shadow";
 import { applyMigration } from "@sentinel/agent";
+import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
@@ -17,7 +18,22 @@ export const runtime = "nodejs";
  * approved through this endpoint.
  */
 export async function POST(req: Request) {
-  const { requestId, decision, typedConfirm } = await req.json();
+  // Only an authenticated approver may reach the gate.
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  const actor = session.user;
+
+  const { requestId, decision, typedConfirm } = await req.json().catch(() => ({}));
+  // Decisions must be explicit — anything other than 'approved'/'rejected' is
+  // rejected outright so a malformed body can never fall through to the approve
+  // path.
+  if (decision !== "approved" && decision !== "rejected") {
+    return NextResponse.json({ error: "decision must be 'approved' or 'rejected'." }, { status: 400 });
+  }
+  if (typeof requestId !== "string" || !requestId) {
+    return NextResponse.json({ error: "requestId is required." }, { status: 400 });
+  }
+
   const rec = await getRequest(requestId);
   if (!rec) return NextResponse.json({ error: "not found" }, { status: 404 });
 
@@ -30,10 +46,10 @@ export async function POST(req: Request) {
   }
 
   if (decision === "rejected") {
-    await recordApproval({ requestId, decision: "rejected", approver: "operator" });
+    await recordApproval({ requestId, decision: "rejected", approver: actor });
     await insertAuditEvent({
       migrationRequestId: requestId,
-      actor: "operator",
+      actor,
       action: "approval.rejected",
       detail: `Rejected — "${rec.title}".`,
       tone: "red",
@@ -56,7 +72,7 @@ export async function POST(req: Request) {
       if (blocked) {
         await insertAuditEvent({
           migrationRequestId: requestId,
-          actor: "operator",
+          actor,
           action: "apply.blocked",
           detail: `Apply refused — BLOCKED migration cannot be approved: "${rec.title}".`,
           tone: "red",
@@ -68,10 +84,10 @@ export async function POST(req: Request) {
   }
 
   // Record the human decision, then run the guarded apply against the real target.
-  await recordApproval({ requestId, decision: "approved", approver: "operator" });
+  await recordApproval({ requestId, decision: "approved", approver: actor });
   await insertAuditEvent({
     migrationRequestId: requestId,
-    actor: "operator",
+    actor,
     action: "approval.approved",
     detail: `Approved — "${rec.title}". Handing to the guarded apply executor.`,
     tone: "green",
