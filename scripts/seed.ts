@@ -12,6 +12,9 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Client } from "pg";
+import { loadDotenv } from "./load-env.js";
+
+loadDotenv();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCHEMA_FILE = path.join(__dirname, "..", "fixtures", "target_schema.sql");

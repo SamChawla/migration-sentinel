@@ -7,10 +7,14 @@
  * rollback proof, data pre-flight, Qodo, gate) -> guarded apply, for a safe,
  * a dangerous (DROP COLUMN), and a blocked (unbounded DELETE) migration.
  */
+import { Client } from "pg";
 import { createRequest, getRequest } from "@sentinel/db/queries";
 import { runAgentPipeline, applyMigration } from "@sentinel/agent";
 
 const TARGET = process.env.TARGET_DB_URL!;
+// A unique column name per run keeps the smoke idempotent — the applied column
+// never collides with a prior run, and it is dropped again in cleanup.
+const SAFE_COL = `smoke_col_${Date.now()}`;
 
 interface Expect {
   status?: string;
@@ -48,8 +52,8 @@ async function main() {
   // 1) SAFE — additive nullable column (green, reversible) → should apply live.
   const safeId = await scenario(
     "smoke: add nullable column",
-    "ALTER TABLE public.users ADD COLUMN nickname text;",
-    "ALTER TABLE public.users DROP COLUMN nickname;",
+    `ALTER TABLE public.users ADD COLUMN ${SAFE_COL} text;`,
+    `ALTER TABLE public.users DROP COLUMN ${SAFE_COL};`,
     { status: "awaiting_approval", severity: "green" },
   );
 
@@ -73,10 +77,18 @@ async function main() {
   console.log("\n=== guarded apply (safe) ===");
   const { recordApproval } = await import("@sentinel/db/queries");
   await recordApproval({ requestId: safeId, decision: "approved", approver: "smoke" });
-  const result = await applyMigration(safeId, { targetUrl: TARGET });
+  const result = await applyMigration(safeId);
   console.log(`apply result: ${result.status}`);
   console.log(result.logs);
   assert(result.status === "applied", `guarded apply expected 'applied', got '${result.status}'`);
+
+  // Cleanup — drop the column we added so the target stays pristine and the
+  // smoke is repeatable.
+  const t = new Client({ connectionString: TARGET });
+  await t.connect();
+  await t.query(`ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL}`);
+  await t.end();
+  console.log(`cleanup — dropped ${SAFE_COL}`);
 
   console.log("\n✓ All smoke assertions passed.");
   process.exit(0);

@@ -21,6 +21,9 @@ import {
   approval,
   auditEvent,
 } from "../packages/db/src/schema.js";
+import { loadDotenv } from "./load-env.js";
+
+loadDotenv();
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5435/sentinel";
 
