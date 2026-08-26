@@ -88,15 +88,43 @@ export function splitStatements(sql: string): string[] {
       continue;
     }
     if (two === "/*") {
-      const end = sql.indexOf("*/", i + 2);
-      i = end === -1 ? n : end + 2;
+      // PostgreSQL block comments NEST — /* a /* b */ c */ ends at the OUTER
+      // delimiter, not the first */. Track depth so a ; after an inner */ is
+      // not mistaken for a statement boundary (which would rejection/mis-split).
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        const pair = sql.slice(i, i + 2);
+        if (pair === "/*") {
+          depth++;
+          i += 2;
+        } else if (pair === "*/") {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
       current += " ";
       continue;
     }
     if (ch === "'") {
+      // Backslashes escape ONLY inside E'...' escape strings. Under the default
+      // standard_conforming_strings=on an ordinary '...' treats \ as a literal
+      // char, so `'abc\'; DELETE ...` is a complete string followed by a real
+      // statement and must split there. Detect the E prefix (a standalone E/e
+      // immediately before the quote, not the tail of an identifier).
+      const prev = i > 0 ? sql[i - 1] : "";
+      const prev2 = i > 1 ? sql[i - 2] : "";
+      const isEString = (prev === "e" || prev === "E") && !/[A-Za-z0-9_]/.test(prev2);
       current += ch;
       i++;
       while (i < n) {
+        if (isEString && sql[i] === "\\") {
+          current += sql[i] + (sql[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
         if (sql[i] === "'" && sql[i + 1] === "'") {
           current += "''";
           i += 2;
@@ -156,12 +184,18 @@ export function splitStatements(sql: string): string[] {
   return statements;
 }
 
-/** Blank the contents of string/dollar-quoted literals so keyword checks never
- *  match text INSIDE a literal (e.g. the word WHERE inside a string value). */
+/** Blank the contents of string/dollar-quoted literals AND double-quoted
+ *  identifiers so keyword checks never match text INSIDE them (e.g. the word
+ *  WHERE in a string value, or a column literally named "WHERE" — either of
+ *  which would otherwise make an unbounded UPDATE/DELETE look bounded and slip
+ *  past the refusal policy). E'...' escape strings are blanked with their
+ *  backslash escapes honoured; ordinary '...' strings escape only via ''. */
 export function codeOnly(sql: string): string {
   return sql
     .replace(/\$([A-Za-z_0-9]*)\$[\s\S]*?\$\1\$/g, "''")
-    .replace(/'(?:[^']|'')*'/g, "''");
+    .replace(/[eE]'(?:[^'\\]|''|\\.)*'/g, "''")
+    .replace(/'(?:[^']|'')*'/g, "''")
+    .replace(/"(?:[^"]|"")*"/g, '""');
 }
 
 export function classifyStatement(statement: string): StatementClassification {
@@ -210,6 +244,16 @@ export function classifyStatement(statement: string): StatementClassification {
     return make("red", "irreversible", true, "Truncates a table — all rows lost.", "AccessExclusiveLock");
   if (/\bDROP\s+COLUMN\b/.test(u))
     return make("red", "irreversible", true, "Drops a column — column data is unrecoverable.", "AccessExclusiveLock");
+
+  // DROP SEQUENCE — the sequence's current value is lost; a schema-only rollback
+  // recreates it reset, so it is data-mutating (rollback can't restore the state).
+  if (/\bDROP\s+SEQUENCE\b/.test(u))
+    return make("amber", "lossy", true, "DROP SEQUENCE — the sequence's current value is lost; recreating it resets the counter.", "AccessExclusiveLock");
+
+  // Procedural blocks (DO / CALL) can write rows the classifier can't see (the
+  // body is opaque), so conservatively treat them as data-mutating.
+  if (/^\s*DO\b/i.test(code) || /^\s*CALL\b/i.test(code))
+    return make("amber", "lossy", true, "Procedural block (DO/CALL) — may mutate data; treated as data-mutating since a rollback can't be proven.", "RowExclusiveLock");
 
   // INSERT — adds rows. A schema-only rollback does NOT remove them, so it is
   // data-mutating (rollbackVerified must be false) even though it is additive.

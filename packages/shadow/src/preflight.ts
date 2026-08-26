@@ -117,15 +117,19 @@ function firstBalanced(s: string, openIdx: number): { content: string; end: numb
 export function requiredPreflightChecks(sql: string): PreflightCheck[] {
   const out: PreflightCheck[] = [];
 
-  const uniqueProbe = (table: string, cols: string, nullsNotDistinct: boolean, label: string) => {
-    const colList = cols.split(",").map((x) => x.trim());
-    const where = nullsNotDistinct ? "" : ` WHERE ${colList.map((c) => `${c} IS NOT NULL`).join(" AND ")}`;
+  const uniqueProbe = (table: string, cols: string, nullsNotDistinct: boolean, label: string, extraWhere?: string) => {
+    const colList = splitTopLevel(cols);
+    const conds: string[] = [];
+    if (!nullsNotDistinct) conds.push(...colList.map((c) => `${c} IS NOT NULL`));
+    // A partial unique index only enforces uniqueness where its predicate holds.
+    if (extraWhere?.trim()) conds.push(`(${extraWhere.trim()})`);
+    const where = conds.length ? ` WHERE ${conds.join(" AND ")}` : "";
     out.push({
       kind: "unique",
       table,
       probeSql: `SELECT count(*) AS violations FROM (SELECT ${cols} FROM ${table}${where} GROUP BY ${cols} HAVING count(*) > 1) dup`,
       failIfPositive: true,
-      description: `Duplicate ${nullsNotDistinct ? "" : "non-null "}(${cols}) values will block the ${label}.`,
+      description: `Duplicate ${nullsNotDistinct ? "" : "non-null "}(${cols})${extraWhere ? " (partial)" : ""} values will block the ${label}.`,
     });
   };
 
@@ -133,12 +137,12 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
     // CREATE UNIQUE INDEX ... ON table (cols) — data-dependent like ADD UNIQUE.
     const ci = stmt.match(
       new RegExp(
-        `CREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:${QIDENT}\\s+)?ON\\s+(?:ONLY\\s+)?(${QIDENT})\\s*(?:USING\\s+${IDENT}\\s*)?\\(([^)]+)\\)`,
+        `CREATE\\s+UNIQUE\\s+INDEX\\s+(?:CONCURRENTLY\\s+)?(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:${QIDENT}\\s+)?ON\\s+(?:ONLY\\s+)?(${QIDENT})\\s*(?:USING\\s+${IDENT}\\s*)?\\(([^)]+)\\)(?:[\\s\\S]*?\\bWHERE\\b([\\s\\S]+))?`,
         "i",
       ),
     );
     if (ci) {
-      uniqueProbe(ci[1], ci[2].trim(), false, "UNIQUE INDEX");
+      uniqueProbe(ci[1], ci[2].trim(), false, "UNIQUE INDEX", ci[3]);
       continue;
     }
 
@@ -149,6 +153,33 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
     // Analyze EACH action independently — NOT VALID / DEFAULT bind to their own action.
     for (const action of splitTopLevel(tableM[2])) {
       const notValid = /\bNOT\s+VALID\b/i.test(action);
+
+      // VALIDATE CONSTRAINT — re-checks existing rows against a previously
+      // NOT VALID constraint; it CAN fail on data, but the predicate isn't in
+      // this statement, so flag for review rather than skip.
+      if (/^\s*VALIDATE\s+CONSTRAINT\b/i.test(action)) {
+        out.push({
+          kind: "check",
+          table,
+          probeSql: null,
+          failIfPositive: true,
+          description: `VALIDATE CONSTRAINT re-checks existing rows; the constraint predicate isn't in this statement — manual review.`,
+        });
+        continue;
+      }
+
+      // ADD EXCLUDE — exclusion constraints use operator-based conflicts with no
+      // simple aggregate row probe; flag for review rather than skip.
+      if (!notValid && new RegExp(`^\\s*ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?EXCLUDE\\b`, "i").test(action)) {
+        out.push({
+          kind: "check",
+          table,
+          probeSql: null,
+          failIfPositive: true,
+          description: `EXCLUDE constraint — operator-based conflicts have no simple aggregate probe; manual review.`,
+        });
+        continue;
+      }
 
       let m = action.match(new RegExp(`ALTER\\s+(?:COLUMN\\s+)?(${QIDENT})\\s+SET\\s+NOT\\s+NULL`, "i"));
       if (m) {
@@ -171,6 +202,22 @@ export function requiredPreflightChecks(sql: string): PreflightCheck[] {
           failIfPositive: true,
           description: `Adding a NOT NULL column with no DEFAULT fails if the table has any rows — add a DEFAULT or backfill.`,
         });
+        continue;
+      }
+
+      // ADD PRIMARY KEY (cols) — requires both non-null AND unique.
+      m = action.match(new RegExp(`ADD\\s+(?:CONSTRAINT\\s+${QIDENT}\\s+)?PRIMARY\\s+KEY\\s*\\(([^)]+)\\)`, "i"));
+      if (m) {
+        const cols = m[1].trim();
+        const colList = splitTopLevel(cols);
+        out.push({
+          kind: "not_null",
+          table,
+          probeSql: `SELECT count(*) AS violations FROM ${table} WHERE ${colList.map((c) => `${c} IS NULL`).join(" OR ")}`,
+          failIfPositive: true,
+          description: `Rows with NULL in (${cols}) will block the PRIMARY KEY.`,
+        });
+        uniqueProbe(table, cols, false, "PRIMARY KEY");
         continue;
       }
 

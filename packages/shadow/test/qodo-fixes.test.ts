@@ -198,3 +198,80 @@ describe("Round 3 regressions", () => {
     expect(checks.some((c) => c.kind === "add_notnull_no_default")).toBe(true);
   });
 });
+
+describe("Round 4 regressions", () => {
+  it("DROP SEQUENCE is data-mutating (R4 #6)", () => {
+    expect(classifyStatement("DROP SEQUENCE orders_id_seq").dataMutating).toBe(true);
+  });
+
+  it("DO / CALL procedural blocks are data-mutating (R4 #8)", () => {
+    expect(classifyStatement("DO $$ BEGIN DELETE FROM t; END $$").dataMutating).toBe(true);
+    expect(classifyStatement("CALL archive_old_orders()").dataMutating).toBe(true);
+  });
+
+  it("does not split on a semicolon inside an E-string escape (R4 #7)", () => {
+    const stmts = splitStatements("SELECT E'a\\';b'; SELECT 1");
+    expect(stmts).toHaveLength(2);
+  });
+
+  it("pre-flights ADD PRIMARY KEY for nulls and duplicates (R4 #10)", () => {
+    const checks = requiredPreflightChecks("ALTER TABLE t ADD PRIMARY KEY (id)");
+    const kinds = checks.map((c) => c.kind).sort();
+    expect(kinds).toEqual(["not_null", "unique"]);
+  });
+
+  it("scopes a partial UNIQUE index probe to its predicate (R4 #9)", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email) WHERE deleted_at IS NULL");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toContain("deleted_at IS NULL");
+  });
+});
+
+describe("Round 5 regressions", () => {
+  it("a WHERE hidden in a double-quoted identifier stays UNBOUNDED (R5 #1)", () => {
+    // codeOnly must blank double-quoted identifiers; a column named "WHERE"
+    // must NOT make a whole-table UPDATE look bounded and slip the gate.
+    const c = classifyStatement('UPDATE users SET "WHERE" = 1');
+    expect(c.severity).toBe("red");
+    expect(c.blocking).toBe(true);
+  });
+
+  it("blanks a WHERE inside an E'...' escape string so DML stays unbounded (R5 #5)", () => {
+    const c = classifyStatement("UPDATE t SET note = E'a\\'WHERE\\'b'");
+    expect(c.blocking).toBe(true);
+    expect(codeOnly("SELECT E'x\\'WHERE\\'y'")).not.toMatch(/WHERE/);
+  });
+
+  it("closes nested block comments at the OUTER delimiter (R5 #2)", () => {
+    const stmts = splitStatements("SELECT 1 /* a /* b */ c */; SELECT 2");
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0]).toBe("SELECT 1");
+    expect(stmts[1]).toBe("SELECT 2");
+  });
+
+  it("treats backslash as literal in ordinary strings, exposing a chained write (R5 #1/#6)", () => {
+    // standard_conforming_strings=on: 'abc\' is a complete string; the DELETE
+    // that follows is a real, separate statement the guard must see.
+    const sql = "SELECT 'abc\\'; DELETE FROM users;";
+    const stmts = splitStatements(sql);
+    expect(stmts).toHaveLength(2);
+    expect(classifyStatement(stmts[1]).blocking).toBe(true);
+    expect(() => assertReadOnly(sql)).toThrow(ReadOnlyViolation);
+  });
+
+  it("flags a quoted-name EXCLUDE constraint for review (R5 #3)", () => {
+    const checks = requiredPreflightChecks(
+      'ALTER TABLE t ADD CONSTRAINT "no overlap" EXCLUDE USING gist (room WITH =)',
+    );
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toBeNull();
+  });
+
+  it("does not shatter a quoted PK column that contains a comma (R5 #4)", () => {
+    const checks = requiredPreflightChecks('ALTER TABLE t ADD PRIMARY KEY ("a,b")');
+    const nn = checks.find((c) => c.kind === "not_null");
+    expect(nn?.probeSql).toContain('"a,b" IS NULL');
+    // exactly one column → exactly one null condition (not split into two)
+    expect(nn?.probeSql?.match(/IS NULL/g)).toHaveLength(1);
+  });
+});

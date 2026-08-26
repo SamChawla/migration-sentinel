@@ -108,14 +108,50 @@ function pgDumpCandidates(): string[] {
  * any line that is a psql backslash meta-command before applying.
  */
 export function sanitizeDump(sql: string): string {
-  return sql
-    .split(/\r?\n/)
-    .filter((line) => !/^\s*\\/.test(line))
-    // Drop version-specific GUCs a newer pg_dump writes that an older shadow
-    // server rejects (e.g. transaction_timeout is PG17+). These are session
-    // no-ops for a schema replay, so stripping them is safe.
-    .filter((line) => !/^\s*SET\s+transaction_timeout\b/i.test(line))
-    .join("\n");
+  const lines = sql.split(/\r?\n/);
+  const out: string[] = [];
+  // Track literal state ACROSS lines so we only strip meta-commands / GUCs at the
+  // top level. A dollar-quoted function body ($$ ... $$) or a multi-line string
+  // literal may legitimately contain a line that starts with `\` or `SET
+  // transaction_timeout`; stripping it there would silently corrupt the routine.
+  let dollarTag: string | null = null;
+  let inString = false;
+  for (const line of lines) {
+    const insideLiteral = dollarTag !== null || inString;
+    const strip =
+      !insideLiteral &&
+      (/^\s*\\/.test(line) || /^\s*SET\s+transaction_timeout\b/i.test(line));
+    if (!strip) out.push(line);
+    // Advance literal state across this line's characters.
+    for (let i = 0; i < line.length; i++) {
+      if (dollarTag) {
+        if (line.startsWith(dollarTag, i)) {
+          i += dollarTag.length - 1;
+          dollarTag = null;
+        }
+        continue;
+      }
+      if (inString) {
+        if (line[i] === "'") {
+          if (line[i + 1] === "'") i++;
+          else inString = false;
+        }
+        continue;
+      }
+      if (line[i] === "'") {
+        inString = true;
+        continue;
+      }
+      if (line[i] === "$") {
+        const m = line.slice(i).match(/^\$[A-Za-z_0-9]*\$/);
+        if (m) {
+          dollarTag = m[0];
+          i += m[0].length - 1;
+        }
+      }
+    }
+  }
+  return out.join("\n");
 }
 
 /**
@@ -128,20 +164,30 @@ export function sanitizeDump(sql: string): string {
  * fresh shadow owned by a different user.
  */
 export async function dumpTargetSchema(targetUrl: string): Promise<string> {
-  const args = [
-    "--schema-only",
-    "--no-owner",
-    "--no-privileges",
-    "--no-comments",
-    "--dbname",
-    targetUrl,
-  ];
+  // Pass the connection via libpq environment variables, NOT on the command
+  // line: a --dbname <url> argument leaks the embedded password into the child
+  // process's argv (visible to `ps`/proc listings) and into any failure
+  // diagnostics that echo the command. Env vars are not exposed that way.
+  const u = new URL(targetUrl);
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    PGHOST: u.hostname,
+    PGPORT: u.port || "5432",
+    PGDATABASE: decodeURIComponent(u.pathname.replace(/^\//, "")) || "postgres",
+  };
+  if (u.username) childEnv.PGUSER = decodeURIComponent(u.username);
+  if (u.password) childEnv.PGPASSWORD = decodeURIComponent(u.password);
+  const sslmode = u.searchParams.get("sslmode");
+  if (sslmode) childEnv.PGSSLMODE = sslmode;
+
+  const args = ["--schema-only", "--no-owner", "--no-privileges", "--no-comments"];
   let lastErr: unknown;
   for (const bin of pgDumpCandidates()) {
     try {
       const { stdout } = await execFileAsync(bin, args, {
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
+        env: childEnv,
       });
       if (stdout && stdout.trim().length > 0) return sanitizeDump(stdout);
     } catch (e) {

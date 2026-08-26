@@ -39,69 +39,91 @@ export interface RollbackResult {
  */
 export async function schemaFingerprint(
   client: Client,
-  schema = "public",
+  // Kept for API compatibility but no longer restricts scope — the fingerprint
+  // covers ALL user schemas so a change outside `public` can't look restored.
+  _schema = "public",
 ): Promise<string> {
+  // Only user schemas — exclude pg_catalog / information_schema / pg_* internals.
+  const NS = `n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'`;
+
+  // The set of user schemas ITSELF — otherwise CREATE SCHEMA extra (an empty
+  // schema with no objects) leaves every object query unchanged and the hash
+  // identical, so an ineffective down would falsely read as schema-restored.
+  const schemas = await client.query(
+    `SELECT n.nspname AS schema
+       FROM pg_namespace n
+      WHERE ${NS} ORDER BY 1`,
+  );
+
+  // Columns with PRECISE types via format_type (captures varchar(50) vs (100),
+  // numeric(10,2), etc. that information_schema.data_type flattens away).
   const columns = await client.query(
-    `SELECT table_name, column_name, data_type, is_nullable, column_default
-       FROM information_schema.columns
-      WHERE table_schema = $1
-      ORDER BY table_name, column_name`,
-    [schema],
+    `SELECT n.nspname AS schema, c.relname AS table_name, a.attname AS column_name,
+            format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS notnull,
+            pg_get_expr(ad.adbin, ad.adrelid) AS "default"
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid AND c.relkind IN ('r','p')
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+      WHERE a.attnum > 0 AND NOT a.attisdropped AND ${NS}
+      ORDER BY 1, 2, 3`,
   );
-  // Full constraint DEFINITIONS (not just name+type): a down migration that
-  // recreates a CHECK/FK/UNIQUE under the same name but a different definition
-  // must change the fingerprint.
   const constraints = await client.query(
-    `SELECT c.conrelid::regclass::text AS table_name,
-            c.conname AS constraint_name,
-            pg_get_constraintdef(c.oid) AS definition
-       FROM pg_constraint c
-       JOIN pg_namespace n ON n.oid = c.connamespace
-      WHERE n.nspname = $1
-      ORDER BY 1, 2`,
-    [schema],
+    `SELECT n.nspname AS schema, c.conrelid::regclass::text AS table_name,
+            c.conname AS constraint_name, pg_get_constraintdef(c.oid) AS definition
+       FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+      WHERE ${NS} ORDER BY 1, 2, 3`,
   );
-  // Indexes are migration-relevant too — a down that rebuilds an index on the
-  // wrong columns restores the columns but not the index.
   const indexes = await client.query(
-    `SELECT tablename, indexname, indexdef
-       FROM pg_indexes
-      WHERE schemaname = $1
-      ORDER BY tablename, indexname`,
-    [schema],
+    `SELECT n.nspname AS schema, c.relname AS table_name, ic.relname AS index_name,
+            pg_get_indexdef(i.indexrelid) AS def
+       FROM pg_index i
+       JOIN pg_class c ON c.oid = i.indrelid
+       JOIN pg_class ic ON ic.oid = i.indexrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE ${NS} ORDER BY 1, 2, 3`,
   );
-  // Views, functions and triggers are migration-relevant too: a faulty down that
-  // leaves a view/function/trigger behind must NOT read as schema-restored.
   const views = await client.query(
-    `SELECT table_name, view_definition
-       FROM information_schema.views
-      WHERE table_schema = $1
-      ORDER BY table_name`,
-    [schema],
+    `SELECT n.nspname AS schema, c.relname AS view_name, pg_get_viewdef(c.oid) AS def
+       FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE c.relkind IN ('v','m') AND ${NS} ORDER BY 1, 2`,
   );
+  // Functions WITH attributes — volatility and SECURITY DEFINER must change the
+  // hash (a down that flips a function to SECURITY DEFINER is a real change).
   const routines = await client.query(
-    `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.prosrc
-       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-      WHERE n.nspname = $1
-      ORDER BY 1, 2`,
-    [schema],
+    `SELECT n.nspname AS schema, p.proname,
+            pg_get_function_identity_arguments(p.oid) AS args, p.prosrc,
+            p.provolatile, p.prosecdef, p.prorettype::regtype::text AS rettype, l.lanname
+       FROM pg_proc p
+       JOIN pg_namespace n ON n.oid = p.pronamespace
+       JOIN pg_language l ON l.oid = p.prolang
+      WHERE ${NS} ORDER BY 1, 2, 3`,
   );
   const triggers = await client.query(
-    `SELECT t.tgname, c.relname AS table_name, pg_get_triggerdef(t.oid) AS def
+    `SELECT n.nspname AS schema, t.tgname, c.relname AS table_name, pg_get_triggerdef(t.oid) AS def
        FROM pg_trigger t
        JOIN pg_class c ON c.oid = t.tgrelid
        JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = $1 AND NOT t.tgisinternal
+      WHERE NOT t.tgisinternal AND ${NS} ORDER BY 1, 2, 3`,
+  );
+  // Sequences — a down that recreates a sequence with different bounds/step is
+  // a real change the schema (columns+constraints) alone would miss.
+  const sequences = await client.query(
+    `SELECT schemaname AS schema, sequencename, data_type::text AS type,
+            start_value, min_value, max_value, increment_by, cycle
+       FROM pg_sequences
+      WHERE schemaname !~ '^pg_' AND schemaname <> 'information_schema'
       ORDER BY 1, 2`,
-    [schema],
   );
   const canonical = JSON.stringify({
+    schemas: schemas.rows,
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,
     views: views.rows,
     routines: routines.rows,
     triggers: triggers.rows,
+    sequences: sequences.rows,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }
