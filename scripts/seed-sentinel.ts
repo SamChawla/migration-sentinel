@@ -1,0 +1,527 @@
+/**
+ * Seed the SENTINEL control-plane database with demo migration records.
+ *
+ *   pnpm tsx scripts/seed-sentinel.ts
+ *
+ * Uses DATABASE_URL from .env (default: postgres://postgres:postgres@localhost:5435/sentinel).
+ * Runs AFTER drizzle-kit migrate has applied the schema.
+ */
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { sql } from "drizzle-orm";
+import {
+  targetDatabase,
+  migrationRequest,
+  generatedArtifact,
+  qodoReview,
+  shadowRun,
+  blastReport,
+  blastFinding,
+  preflightResult,
+  approval,
+  auditEvent,
+} from "../packages/db/src/schema.js";
+
+const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5435/sentinel";
+
+async function main() {
+  const pool = new Pool({ connectionString: DATABASE_URL });
+  const db = drizzle(pool);
+
+  console.log(`→ Connected to sentinel-db: ${redact(DATABASE_URL)}`);
+
+  // Clear existing data (idempotent re-seed)
+  console.log("→ Clearing existing demo data…");
+  await db.delete(auditEvent);
+  await db.delete(approval);
+  await db.delete(preflightResult);
+  await db.delete(blastFinding);
+  await db.delete(blastReport);
+  await db.delete(qodoReview);
+  await db.delete(shadowRun);
+  await db.delete(generatedArtifact);
+  await db.delete(migrationRequest);
+  await db.delete(targetDatabase);
+
+  // ── Target databases ──────────────────────────────────────────────────
+  console.log("→ Inserting target databases…");
+  const [prodTarget] = await db.insert(targetDatabase).values({
+    name: "Production Orders DB",
+    engine: "postgres",
+    connectionAlias: "prod-orders-db",
+    connectionUrl: process.env.TARGET_DB_URL ?? "postgres://postgres:postgres@localhost:5433/prod",
+  }).returning();
+
+  const [stagingTarget] = await db.insert(targetDatabase).values({
+    name: "Staging Orders DB",
+    engine: "postgres",
+    connectionAlias: "staging-orders-db",
+  }).returning();
+
+  // ── Helper to make timestamps ─────────────────────────────────────────
+  const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
+
+  // ── Migration 1: Drop legacy_notes (RED, awaiting_approval) ───────────
+  console.log("→ Seeding migration: Drop legacy_notes…");
+  const [req1] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "ALTER TABLE public.users DROP COLUMN legacy_notes;" },
+    title: "Drop legacy_notes from users",
+    status: "awaiting_approval",
+    requestedBy: "dev@acme.io",
+    createdAt: hoursAgo(1),
+    updatedAt: hoursAgo(1),
+  }).returning();
+
+  const [art1] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req1.id,
+    version: 1,
+    upSql: "ALTER TABLE public.users DROP COLUMN legacy_notes;",
+    downSql: "-- NO CLEAN ROLLBACK\nALTER TABLE public.users ADD COLUMN legacy_notes text;\n-- data NOT restored",
+    reversibility: "irreversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(1),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art1.id,
+    verdict: "passed_with_warnings",
+    summary: "Migration syntax is valid. Consider a two-phase drop.",
+    findings: ["Consider a two-phase drop (stop writing, then drop next release)."],
+  });
+
+  const [shadow1] = await db.insert(shadowRun).values({
+    migrationRequestId: req1.id,
+    generatedArtifactId: art1.id,
+    status: "succeeded",
+    rollbackVerified: false,
+    startedAt: hoursAgo(1),
+    finishedAt: hoursAgo(0.95),
+    createdAt: hoursAgo(1),
+  }).returning();
+
+  const [blast1] = await db.insert(blastReport).values({
+    shadowRunId: shadow1.id,
+    overallSeverity: "red",
+    totalRowsAffected: 1204338,
+    estLockMs: 14000,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(1),
+  }).returning();
+
+  await db.insert(blastFinding).values({
+    blastReportId: blast1.id,
+    statementIndex: 0,
+    statementSql: "ALTER TABLE users DROP COLUMN legacy_notes",
+    severity: "red",
+    lockType: "AccessExclusiveLock",
+    note: "Drops a column — data unrecoverable.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req1.id,
+    decision: "pending",
+    requiresTypedConfirm: true,
+    expectedConfirmValue: "users",
+    createdAt: hoursAgo(1),
+  });
+
+  // ── Migration 2: Add last_login_at (GREEN, awaiting_approval) ─────────
+  console.log("→ Seeding migration: Add last_login_at…");
+  const [req2] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;" },
+    title: "Add last_login_at to users",
+    status: "awaiting_approval",
+    requestedBy: "dev@acme.io",
+    createdAt: hoursAgo(2),
+    updatedAt: hoursAgo(2),
+  }).returning();
+
+  const [art2] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req2.id,
+    version: 1,
+    upSql: "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;",
+    downSql: "ALTER TABLE public.users DROP COLUMN last_login_at;",
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(2),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art2.id,
+    verdict: "passed",
+    findings: [],
+  });
+
+  const [shadow2] = await db.insert(shadowRun).values({
+    migrationRequestId: req2.id,
+    generatedArtifactId: art2.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    startedAt: hoursAgo(2),
+    finishedAt: hoursAgo(1.95),
+    createdAt: hoursAgo(2),
+  }).returning();
+
+  const [blast2] = await db.insert(blastReport).values({
+    shadowRunId: shadow2.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 5,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(2),
+  }).returning();
+
+  await db.insert(blastFinding).values({
+    blastReportId: blast2.id,
+    statementIndex: 0,
+    statementSql: "ALTER TABLE users ADD COLUMN last_login_at timestamptz",
+    severity: "green",
+    note: "Metadata-only in Postgres 11+.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req2.id,
+    decision: "pending",
+    requiresTypedConfirm: false,
+    createdAt: hoursAgo(2),
+  });
+
+  // ── Migration 3: Index orders(created_at) — APPLIED ───────────────────
+  console.log("→ Seeding migration: Index orders(created_at)…");
+  const [req3] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "CREATE INDEX CONCURRENTLY idx_orders_created_at ON public.orders (created_at);" },
+    title: "Index orders(created_at) CONCURRENTLY",
+    status: "applied",
+    requestedBy: "priya@acme.io",
+    createdAt: hoursAgo(26),
+    updatedAt: hoursAgo(25.5),
+  }).returning();
+
+  const [art3] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req3.id,
+    version: 1,
+    upSql: "CREATE INDEX CONCURRENTLY idx_orders_created_at ON public.orders (created_at);",
+    downSql: "DROP INDEX CONCURRENTLY IF EXISTS idx_orders_created_at;",
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(26),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art3.id,
+    verdict: "passed",
+    findings: [],
+  });
+
+  const [shadow3] = await db.insert(shadowRun).values({
+    migrationRequestId: req3.id,
+    generatedArtifactId: art3.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(26),
+  }).returning();
+
+  const [blast3] = await db.insert(blastReport).values({
+    shadowRunId: shadow3.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 12,
+    tablesTouched: ["public.orders"],
+    createdAt: hoursAgo(26),
+  }).returning();
+
+  await db.insert(blastFinding).values({
+    blastReportId: blast3.id,
+    statementIndex: 0,
+    statementSql: "CREATE INDEX CONCURRENTLY",
+    severity: "green",
+    note: "Non-blocking index build.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req3.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(25.5),
+    createdAt: hoursAgo(26),
+  });
+
+  // ── Migration 4: SET NOT NULL — APPLIED ───────────────────────────────
+  console.log("→ Seeding migration: Backfill + SET NOT NULL…");
+  const [req4] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "UPDATE public.users SET full_name = 'unknown' WHERE full_name IS NULL;\nALTER TABLE public.users ALTER COLUMN full_name SET NOT NULL;" },
+    title: "Backfill full_name and SET NOT NULL",
+    status: "applied",
+    requestedBy: "wei@acme.io",
+    createdAt: hoursAgo(49),
+    updatedAt: hoursAgo(48),
+  }).returning();
+
+  const [art4] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req4.id,
+    version: 1,
+    upSql: "UPDATE public.users SET full_name = 'unknown' WHERE full_name IS NULL;\nALTER TABLE public.users ALTER COLUMN full_name SET NOT NULL;",
+    downSql: "ALTER TABLE public.users ALTER COLUMN full_name DROP NOT NULL;",
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(49),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art4.id,
+    verdict: "passed_with_warnings",
+    findings: ["Prefer NOT VALID → VALIDATE for very large tables."],
+  });
+
+  const [shadow4] = await db.insert(shadowRun).values({
+    migrationRequestId: req4.id,
+    generatedArtifactId: art4.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(49),
+  }).returning();
+
+  const [blast4] = await db.insert(blastReport).values({
+    shadowRunId: shadow4.id,
+    overallSeverity: "amber",
+    totalRowsAffected: 33121,
+    estLockMs: 800,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(49),
+  }).returning();
+
+  await db.insert(blastFinding).values([
+    {
+      blastReportId: blast4.id,
+      statementIndex: 0,
+      statementSql: "UPDATE … WHERE full_name IS NULL",
+      severity: "amber",
+      note: "Bounded backfill of 33k rows before constraint.",
+    },
+    {
+      blastReportId: blast4.id,
+      statementIndex: 1,
+      statementSql: "SET NOT NULL",
+      severity: "amber",
+      lockType: "AccessExclusiveLock",
+      note: "Brief exclusive lock; pre-flight verified 0 violations.",
+    },
+  ]);
+
+  await db.insert(preflightResult).values({
+    shadowRunId: shadow4.id,
+    kind: "not_null",
+    tableName: "public.users",
+    probeSql: "SELECT count(*) AS violations FROM public.users WHERE full_name IS NULL",
+    violations: 0,
+    willFail: false,
+    description: "Rows where full_name IS NULL will block SET NOT NULL — backfill completed.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req4.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(48),
+    createdAt: hoursAgo(49),
+  });
+
+  // ── Migration 5: Unbounded UPDATE — REJECTED ──────────────────────────
+  console.log("→ Seeding migration: Deactivate all users (rejected)…");
+  const [req5] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "UPDATE public.users SET is_active = false;" },
+    title: "Deactivate all users (unbounded UPDATE)",
+    status: "rejected",
+    requestedBy: "dev@acme.io",
+    createdAt: hoursAgo(72),
+    updatedAt: hoursAgo(71),
+  }).returning();
+
+  const [art5] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req5.id,
+    version: 1,
+    upSql: "UPDATE public.users SET is_active = false;",
+    downSql: "-- cannot restore previous per-row values",
+    reversibility: "irreversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(72),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art5.id,
+    verdict: "failed",
+    findings: ["Unbounded UPDATE with no WHERE clause.", "No reversible down migration possible."],
+  });
+
+  const [shadow5] = await db.insert(shadowRun).values({
+    migrationRequestId: req5.id,
+    generatedArtifactId: art5.id,
+    status: "succeeded",
+    rollbackVerified: false,
+    createdAt: hoursAgo(72),
+  }).returning();
+
+  const [blast5] = await db.insert(blastReport).values({
+    shadowRunId: shadow5.id,
+    overallSeverity: "red",
+    totalRowsAffected: 50000,
+    estLockMs: 22000,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(72),
+  }).returning();
+
+  await db.insert(blastFinding).values({
+    blastReportId: blast5.id,
+    statementIndex: 0,
+    statementSql: "UPDATE public.users SET is_active = false",
+    severity: "red",
+    note: "Unbounded UPDATE — no WHERE clause; prior values unrecoverable.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req5.id,
+    decision: "rejected",
+    approver: "sam.chawla26@gmail.com",
+    requiresTypedConfirm: true,
+    expectedConfirmValue: "users",
+    decidedAt: hoursAgo(71),
+    createdAt: hoursAgo(72),
+  });
+
+  // ── Migration 6: Widen amount — DRY_RUNNING ───────────────────────────
+  console.log("→ Seeding migration: Widen orders.amount…");
+  const [req6] = await db.insert(migrationRequest).values({
+    targetDatabaseId: stagingTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);" },
+    title: "Widen orders.amount to numeric(12,2)",
+    status: "dry_running",
+    requestedBy: "priya@acme.io",
+    createdAt: hoursAgo(0.4),
+    updatedAt: hoursAgo(0.4),
+  }).returning();
+
+  await db.insert(generatedArtifact).values({
+    migrationRequestId: req6.id,
+    version: 1,
+    upSql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);",
+    downSql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(10,2);",
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(0.4),
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req6.id,
+    decision: "pending",
+    requiresTypedConfirm: false,
+    createdAt: hoursAgo(0.4),
+  });
+
+  // ── Migration 7: Unbounded DELETE — BLOCKED (Sentinel refuses) ────────
+  console.log("→ Seeding migration: Purge all orders (blocked)…");
+  const [req7] = await db.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: "DELETE FROM public.orders;" },
+    title: "Purge all orders (unbounded DELETE)",
+    status: "blocked",
+    requestedBy: "dev@acme.io",
+    createdAt: hoursAgo(0.2),
+    updatedAt: hoursAgo(0.2),
+  }).returning();
+
+  const [art7] = await db.insert(generatedArtifact).values({
+    migrationRequestId: req7.id,
+    version: 1,
+    upSql: "DELETE FROM public.orders;",
+    downSql: "-- NO ROLLBACK: every row is destroyed; prior values are unrecoverable.",
+    reversibility: "irreversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(0.2),
+  }).returning();
+
+  await db.insert(qodoReview).values({
+    generatedArtifactId: art7.id,
+    verdict: "failed",
+    summary: "Whole-table DELETE with no WHERE clause and no recoverable rollback.",
+    findings: ["Unbounded DELETE — every row destroyed.", "No reversible down migration is possible."],
+  });
+
+  const [shadow7] = await db.insert(shadowRun).values({
+    migrationRequestId: req7.id,
+    generatedArtifactId: art7.id,
+    status: "succeeded",
+    rollbackVerified: false,
+    createdAt: hoursAgo(0.2),
+  }).returning();
+
+  const [blast7] = await db.insert(blastReport).values({
+    shadowRunId: shadow7.id,
+    overallSeverity: "red",
+    totalRowsAffected: 842197,
+    estLockMs: 61000,
+    tablesTouched: ["public.orders"],
+    createdAt: hoursAgo(0.2),
+  }).returning();
+
+  await db.insert(blastFinding).values({
+    blastReportId: blast7.id,
+    statementIndex: 0,
+    statementSql: "DELETE FROM public.orders",
+    severity: "red",
+    lockType: "RowExclusiveLock",
+    note: "Unbounded DELETE — whole-dataset destruction with no recovery path. BLOCKED.",
+  });
+
+  await db.insert(approval).values({
+    migrationRequestId: req7.id,
+    decision: "pending",
+    requiresTypedConfirm: false,
+    createdAt: hoursAgo(0.2),
+  });
+
+  // ── Audit events ──────────────────────────────────────────────────────
+  console.log("→ Seeding audit events…");
+  await db.insert(auditEvent).values([
+    { migrationRequestId: req6.id, actor: "agent", action: "shadow.dry_run.started", detail: "Shadow provisioned; running up→down on schema-only clone.", tone: "info" as const, createdAt: hoursAgo(0.4) },
+    { migrationRequestId: req1.id, actor: "agent", action: "gate.paused", detail: "RED verdict — irreversible DROP COLUMN. Awaiting human approval (typed confirm required).", tone: "red" as const, createdAt: hoursAgo(1) },
+    { migrationRequestId: req2.id, actor: "agent", action: "gate.paused", detail: "GREEN verdict — rollback proven on shadow. Awaiting approval.", tone: "info" as const, createdAt: hoursAgo(2) },
+    { migrationRequestId: req3.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Applied with lock_timeout=2s in 480 ms. Audit row written.", tone: "green" as const, createdAt: hoursAgo(25.5) },
+    { migrationRequestId: req3.id, actor: "sam.chawla26@gmail.com", action: "approval.approved", detail: "Approved — non-blocking CONCURRENTLY build.", tone: "green" as const, createdAt: hoursAgo(26) },
+    { migrationRequestId: req4.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Backfill (33,121 rows) + SET NOT NULL applied; pre-flight re-probe showed 0 violations.", tone: "green" as const, createdAt: hoursAgo(48) },
+    { migrationRequestId: req4.id, actor: "agent", action: "preflight.blocked_then_fixed", detail: "33,121 NULL rows would fail SET NOT NULL — backfill value requested and two-phase migration regenerated.", tone: "info" as const, createdAt: hoursAgo(49) },
+    { migrationRequestId: req5.id, actor: "sam.chawla26@gmail.com", action: "approval.rejected", detail: "Rejected — unbounded UPDATE, prior values unrecoverable.", tone: "red" as const, createdAt: hoursAgo(71) },
+    { migrationRequestId: req5.id, actor: "agent", action: "gate.paused", detail: "RED verdict — data-mutating statement with no rollback.", tone: "red" as const, createdAt: hoursAgo(72) },
+    { migrationRequestId: req7.id, actor: "agent", action: "gate.blocked", detail: "BLOCKED — unbounded DELETE destroys the whole table with no recovery path. Sentinel refuses to apply; approval cannot override.", tone: "red" as const, createdAt: hoursAgo(0.2) },
+  ]);
+
+  // ── Summary ───────────────────────────────────────────────────────────
+  const reqCount = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
+  const evCount = await db.select({ count: sql<number>`count(*)::int` }).from(auditEvent);
+
+  console.log(`\n✓ Sentinel DB seeded successfully`);
+  console.log(`  migration_request: ${reqCount[0].count}`);
+  console.log(`  audit_event:       ${evCount[0].count}`);
+
+  await pool.end();
+}
+
+function redact(url: string): string {
+  return url.replace(/\/\/([^:]+):[^@]+@/, "//$1:***@");
+}
+
+main().catch((err) => {
+  console.error("✗ Seed failed:", err.message);
+  process.exit(1);
+});
