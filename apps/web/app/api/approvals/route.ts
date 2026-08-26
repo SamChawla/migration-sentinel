@@ -46,7 +46,20 @@ export async function POST(req: Request) {
   }
 
   if (decision === "rejected") {
-    await recordApproval({ requestId, decision: "rejected", approver: actor });
+    // recordApproval is a GUARDED transition — it only decides a request that is
+    // still awaiting_approval/blocked. If a concurrent approval has already
+    // claimed this request for apply (status=applying) between our status read
+    // above and here, it returns false and we must NOT report a rejection that
+    // didn't take — otherwise the apply finishes 'applied' after we told the
+    // caller 'rejected', with contradictory audit events.
+    const moved = await recordApproval({ requestId, decision: "rejected", approver: actor });
+    if (!moved) {
+      const fresh = await getRequest(requestId);
+      return NextResponse.json(
+        { error: `could not reject — request already ${fresh?.status ?? "changed"}.` },
+        { status: 409 },
+      );
+    }
     await insertAuditEvent({
       migrationRequestId: requestId,
       actor,
@@ -84,7 +97,16 @@ export async function POST(req: Request) {
   }
 
   // Record the human decision, then run the guarded apply against the real target.
-  await recordApproval({ requestId, decision: "approved", approver: actor });
+  // Same guard: if the request left the decidable state under a concurrent
+  // decision, refuse rather than approve-then-apply on stale state.
+  const decided = await recordApproval({ requestId, decision: "approved", approver: actor });
+  if (!decided) {
+    const fresh = await getRequest(requestId);
+    return NextResponse.json(
+      { error: `could not record approval — request already ${fresh?.status ?? "changed"}.` },
+      { status: 409 },
+    );
+  }
   await insertAuditEvent({
     migrationRequestId: requestId,
     actor,

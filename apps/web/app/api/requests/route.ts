@@ -1,5 +1,11 @@
 import { NextResponse, after } from "next/server";
-import { listRequests, createRequest } from "@sentinel/db/queries";
+import {
+  listRequests,
+  createRequest,
+  getRequest,
+  setRequestStatus,
+  insertAuditEvent,
+} from "@sentinel/db/queries";
 import { runAgentPipeline } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
 
@@ -45,6 +51,25 @@ export async function POST(req: Request) {
       await runAgentPipeline(rec.id);
     } catch (e) {
       console.error(`[agent] pipeline failed for ${rec.id}:`, e);
+      // Backstop against a strand: runAgentPipeline lands its own failures in
+      // 'failed', but if it threw before that handler engaged, make sure the
+      // request can't be left stuck mid-flight (received/generating/dry_running)
+      // with no failure audit and no way to reclaim it.
+      try {
+        const cur = await getRequest(rec.id);
+        if (cur && ["received", "generating", "dry_running"].includes(cur.status)) {
+          await setRequestStatus(rec.id, "failed");
+          await insertAuditEvent({
+            migrationRequestId: rec.id,
+            actor: "sentinel.agent",
+            action: "pipeline.failed",
+            detail: `Pipeline crashed before completing: ${(e as Error).message}`,
+            tone: "red",
+          });
+        }
+      } catch (inner) {
+        console.error(`[agent] failed to mark ${rec.id} failed:`, inner);
+      }
     }
   });
 
