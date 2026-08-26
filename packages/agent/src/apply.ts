@@ -26,6 +26,8 @@ import {
 } from "@sentinel/db/queries";
 
 export interface ApplyOptions {
+  /** @deprecated Ignored — the apply always binds to the request's analyzed
+   *  target (getRequestTargetUrl). A caller cannot redirect the write. */
   targetUrl?: string;
   typedConfirm?: string | null;
   lockTimeoutMs?: number;
@@ -54,8 +56,12 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     blocked,
   });
 
-  const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));
-  if (!targetUrl) throw new Error("applyMigration: no target URL");
+  // SECURITY: bind the apply to the SAME target the pipeline analyzed — the one
+  // resolved from the request, never a caller-supplied override. opts.targetUrl
+  // is ignored for the connection (a substituted DB would invalidate all the
+  // shadow/rollback/preflight evidence the human approved).
+  const targetUrl = await getRequestTargetUrl(requestId);
+  if (!targetUrl) throw new Error("applyMigration: no target URL for this request");
 
   const lockTimeoutMs = opts.lockTimeoutMs ?? Number(process.env.APPLY_LOCK_TIMEOUT_MS ?? 3000);
   const statementTimeoutMs = opts.statementTimeoutMs ?? Number(process.env.APPLY_STATEMENT_TIMEOUT_MS ?? 30000);
@@ -71,89 +77,111 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     };
   }
 
-  const runId = await insertApplyRun({
-    requestId,
-    lockTimeoutMs,
-    statementTimeoutMs,
-    rollbackAvailable: rec.reversibility !== "irreversible",
-  });
-
   const logs: string[] = [];
   const log = (m: string) => logs.push(`[${new Date().toISOString()}] ${m}`);
+  const bestEffort = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+    } catch (e) {
+      log(`WARN — control-plane write failed: ${(e as Error).message}`);
+    }
+  };
 
   // CREATE INDEX CONCURRENTLY (and a few others) cannot run inside a transaction
-  // block. When the migration needs autocommit we run each statement on its own
-  // and forgo the wrapping transaction — there is no atomic rollback for these,
-  // by PostgreSQL's own design.
+  // block. Those run in autocommit — there is no atomic rollback for them, by
+  // PostgreSQL's own design, so a later failure can leave earlier DDL committed.
   const nonTransactional = /\b(CONCURRENTLY|VACUUM|REINDEX\s+DATABASE|CREATE\s+DATABASE|DROP\s+DATABASE)\b/i.test(
     codeOnly(artifact.upSql),
   );
-  log(
-    `apply start — lock_timeout=${lockTimeoutMs}ms statement_timeout=${statementTimeoutMs}ms` +
-      (nonTransactional ? " (autocommit — non-transactional statement present)" : ""),
-  );
 
-  const client = new Client({ connectionString: targetUrl });
+  // Everything after the claim is guarded: ANY failure (run-row insert, connect,
+  // execution, or bookkeeping) lands the request in a definite 'failed' state
+  // rather than stranding it in 'applying' where it can never be re-claimed.
+  let runId: string | null = null;
   let committed = false;
+  let committedCount = 0;
   try {
-    await client.connect();
-    await client.query(`SET lock_timeout = ${Number(lockTimeoutMs)}`);
-    await client.query(`SET statement_timeout = ${Number(statementTimeoutMs)}`);
-
-    if (nonTransactional) {
-      for (const stmt of splitStatements(artifact.upSql)) {
-        await client.query(stmt);
-      }
-      committed = true;
-      log("APPLIED (autocommit) — no wrapping transaction; individual statements committed");
-    } else {
-      await client.query("BEGIN");
-      log("BEGIN");
-      try {
-        const res = await client.query(artifact.upSql);
-        const rows = Array.isArray(res) ? res.reduce((n, r) => n + (r.rowCount ?? 0), 0) : res.rowCount ?? 0;
-        await client.query("COMMIT");
-        committed = true;
-        log(`COMMIT — migration applied${rows ? ` (${rows} rows affected)` : ""}`);
-      } catch (e) {
-        await client.query("ROLLBACK").catch(() => {});
-        log(`ERROR — ${(e as Error).message}. ROLLBACK issued; target unchanged.`);
-        throw e;
-      }
-    }
-  } catch (e) {
-    await finishApplyRun(runId, { status: "failed", logs: logs.join("\n"), rolledBackAt: new Date() });
-    await setRequestStatus(requestId, "failed");
-    await insertAuditEvent({
-      migrationRequestId: requestId,
-      actor: "sentinel.apply",
-      action: "apply.failed",
-      detail: `Apply failed${nonTransactional ? " (autocommit — partial statements may remain)" : " and rolled back"} — ${(e as Error).message}`,
-      tone: "red",
+    runId = await insertApplyRun({
+      requestId,
+      lockTimeoutMs,
+      statementTimeoutMs,
+      rollbackAvailable: rec.reversibility !== "irreversible",
     });
-    return { status: "failed", error: (e as Error).message, logs: logs.join("\n") };
-  } finally {
-    await client.end().catch(() => {});
-  }
+    log(
+      `apply start — lock_timeout=${lockTimeoutMs}ms statement_timeout=${statementTimeoutMs}ms` +
+        (nonTransactional ? " (autocommit — non-transactional statement present)" : ""),
+    );
 
-  // The target migration is already committed. Success bookkeeping runs in its
-  // own guard: a control-plane failure here must NOT report the apply as failed
-  // (the write is done) — it is logged, and the one-shot claim prevents a retry
-  // from reapplying regardless.
-  if (committed) {
+    const client = new Client({ connectionString: targetUrl });
     try {
-      await finishApplyRun(runId, { status: "succeeded", logs: logs.join("\n"), appliedAt: new Date() });
-      await setRequestStatus(requestId, "applied");
-      await insertAuditEvent({
+      await client.connect();
+      await client.query(`SET lock_timeout = ${Number(lockTimeoutMs)}`);
+      await client.query(`SET statement_timeout = ${Number(statementTimeoutMs)}`);
+
+      if (nonTransactional) {
+        const stmts = splitStatements(artifact.upSql);
+        for (const stmt of stmts) {
+          await client.query(stmt);
+          committedCount++;
+        }
+        committed = true;
+        log(`APPLIED (autocommit) — ${committedCount}/${stmts.length} statement(s) committed individually`);
+      } else {
+        await client.query("BEGIN");
+        log("BEGIN");
+        try {
+          const res = await client.query(artifact.upSql);
+          const rows = Array.isArray(res) ? res.reduce((n, r) => n + (r.rowCount ?? 0), 0) : res.rowCount ?? 0;
+          await client.query("COMMIT");
+          committed = true;
+          log(`COMMIT — migration applied${rows ? ` (${rows} rows affected)` : ""}`);
+        } catch (e) {
+          await client.query("ROLLBACK").catch(() => {});
+          log(`ERROR — ${(e as Error).message}. ROLLBACK issued; target unchanged.`);
+          throw e;
+        }
+      }
+    } finally {
+      await client.end().catch(() => {});
+    }
+
+    // Target is committed. Success bookkeeping is best-effort — a control-plane
+    // hiccup here must not report the (already done) apply as failed.
+    await bestEffort(() => finishApplyRun(runId!, { status: "succeeded", logs: logs.join("\n"), appliedAt: new Date() }));
+    await bestEffort(() => setRequestStatus(requestId, "applied"));
+    await bestEffort(() =>
+      insertAuditEvent({
         migrationRequestId: requestId,
         actor: "sentinel.apply",
         action: "apply.succeeded",
         detail: `Applied to target — "${rec.title}".`,
         tone: "green",
-      });
-    } catch (bookkeepingErr) {
-      log(`WARN — apply committed but control-plane bookkeeping failed: ${(bookkeepingErr as Error).message}`);
-    }
+      }),
+    );
+    return { status: "applied", logs: logs.join("\n") };
+  } catch (e) {
+    const partial = nonTransactional && committedCount > 0;
+    log(`FAILED — ${(e as Error).message}${partial ? ` (autocommit — ${committedCount} statement(s) already committed; manual reconciliation required)` : ""}`);
+    // Best-effort each write so a single control-plane failure can't strand the
+    // request in 'applying'. rolledBackAt is null for a partial autocommit.
+    if (runId)
+      await bestEffort(() =>
+        finishApplyRun(runId!, {
+          status: "failed",
+          logs: logs.join("\n"),
+          rolledBackAt: committed || partial ? null : new Date(),
+        }),
+      );
+    await bestEffort(() => setRequestStatus(requestId, "failed"));
+    await bestEffort(() =>
+      insertAuditEvent({
+        migrationRequestId: requestId,
+        actor: "sentinel.apply",
+        action: "apply.failed",
+        detail: `Apply failed — ${(e as Error).message}${partial ? ` (autocommit left ${committedCount} statement(s) committed)` : ""}`,
+        tone: "red",
+      }),
+    );
+    return { status: "failed", error: (e as Error).message, logs: logs.join("\n") };
   }
-  return { status: "applied", logs: logs.join("\n") };
 }

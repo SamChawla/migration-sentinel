@@ -80,26 +80,39 @@ function buildPrompt(input: QodoReviewInput): string {
     .join("\n");
 }
 
-/** Pull the last balanced JSON object out of arbitrary CLI stdout. */
+/** Pull the LAST balanced top-level JSON object out of arbitrary CLI stdout
+ *  (the final verdict follows any reasoning), tracking string state so braces
+ *  inside a JSON string value don't skew the depth count. */
 export function extractJson(text: string): unknown | null {
-  const end = text.lastIndexOf("}");
-  if (end === -1) return null;
   let depth = 0;
-  for (let i = end; i >= 0; i--) {
+  let inStr = false;
+  let esc = false;
+  let start = -1;
+  let last: string | null = null;
+  for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (ch === "}") depth++;
-    else if (ch === "{") {
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+    } else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}" && depth > 0) {
       depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(i, end + 1));
-        } catch {
-          return null;
-        }
-      }
+      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
     }
   }
-  return null;
+  if (last === null) return null;
+  try {
+    return JSON.parse(last);
+  } catch {
+    return null;
+  }
 }
 
 export function normalizeVerdict(v: unknown): QodoVerdict {

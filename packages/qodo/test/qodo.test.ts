@@ -21,6 +21,11 @@ describe("extractJson", () => {
     expect(extractJson("no json here")).toBeNull();
     expect(extractJson("")).toBeNull();
   });
+
+  it("ignores braces inside string values (R2)", () => {
+    const out = 'reasoning… {"verdict":"failed","summary":"has { and } in it"}';
+    expect(extractJson(out)).toEqual({ verdict: "failed", summary: "has { and } in it" });
+  });
 });
 
 describe("normalizeVerdict", () => {
