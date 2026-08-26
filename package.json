@@ -1,0 +1,41 @@
+{
+  "name": "migration-sentinel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "AI agent that plans, dry-runs, and applies Postgres migrations — pausing for a human before anything irreversible.",
+  "packageManager": "pnpm@9.12.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @sentinel/web dev",
+    "build": "pnpm -r build",
+    "db:generate": "pnpm --filter @sentinel/db generate",
+    "db:migrate": "pnpm --filter @sentinel/db migrate",
+    "db:seed": "tsx scripts/seed.ts",
+    "db:seed:sentinel": "tsx scripts/seed-sentinel.ts",
+    "spike": "tsx packages/agent/src/spike.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:blast": "vitest run blast",
+    "test:rollback": "vitest run rollback",
+    "verify:blast": "node --experimental-strip-types scripts/verify_blast.ts"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@sentinel/agent": "workspace:*",
+    "@sentinel/core": "workspace:*",
+    "@sentinel/db": "workspace:*",
+    "@sentinel/shadow": "workspace:*",
+    "@types/node": "^22.7.0",
+    "@types/pg": "^8.11.10",
+    "drizzle-orm": "^0.36.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

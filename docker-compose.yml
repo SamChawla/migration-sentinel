@@ -1,0 +1,48 @@
+# Local dev stack for Migration Sentinel.
+#   docker compose up -d
+# Three separate Postgres roles (see .env.example):
+#   - sentinel-db : our own control-plane state
+#   - target-db   : the demo "prod" DB the agent migrates (seed with pnpm db:seed)
+#   - shadow-db   : ephemeral clones are created/dropped here during dry-runs
+#
+# The TrueForge server runs separately via `npx @truefoundry/trueforge`
+# (or add it here once you pin a version/image).
+
+services:
+  sentinel-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: sentinel
+    ports: ["5435:5432"]   # host 5432 is taken by a local Windows Postgres service
+    volumes: ["sentinel_data:/var/lib/postgresql/data"]
+
+  target-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: prod
+    ports: ["5433:5432"]
+    volumes: ["target_data:/var/lib/postgresql/data"]
+
+  shadow-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Creates the `shadow` database used by SHADOW_DATABASE_URL (rollback
+      # integration tests). The default `postgres` maintenance DB still exists
+      # and backs SHADOW_ADMIN_URL, which CREATE/DROPs the ephemeral clones.
+      POSTGRES_DB: shadow
+    ports: ["5434:5432"]
+    # Ephemeral by design: mount PGDATA as tmpfs so every start is a FRESH init.
+    # (The postgres image keeps an anonymous volume across recreation, which
+    # would skip init and leave POSTGRES_DB=shadow uncreated for existing stacks.)
+    tmpfs:
+      - /var/lib/postgresql/data
+
+volumes:
+  sentinel_data:
+  target_data:

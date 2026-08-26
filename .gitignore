@@ -13,3 +13,5 @@ drizzle/.snapshot/
 .env.*.local
 # Internal planning/design docs — kept local, not published to the repo
 docs/
+# Local Claude Code config (rules/skills) — not part of the product
+.claude/
