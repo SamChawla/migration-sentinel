@@ -12,7 +12,17 @@ import { runAgentPipeline, applyMigration } from "@sentinel/agent";
 
 const TARGET = process.env.TARGET_DB_URL!;
 
-async function scenario(name: string, up: string, down: string) {
+interface Expect {
+  status?: string;
+  severity?: string;
+  typedConfirm?: boolean;
+}
+
+function assert(cond: boolean, msg: string): void {
+  if (!cond) throw new Error(`ASSERTION FAILED — ${msg}`);
+}
+
+async function scenario(name: string, up: string, down: string, expect: Expect) {
   console.log(`\n=== ${name} ===`);
   const rec = await createRequest({ title: name, targetDb: "prod-orders-db", upSql: up, downSql: down });
   await runAgentPipeline(rec.id, { targetUrl: TARGET });
@@ -22,6 +32,15 @@ async function scenario(name: string, up: string, down: string) {
       `rollbackVerified=${r?.rollbackVerified} typedConfirm=${r?.approval.requiresTypedConfirm} ` +
       `expect="${r?.approval.expectedConfirm ?? ""}" qodo=${r?.qodoVerdict} preflight=${r?.preflight.length}`,
   );
+  assert(r != null, `${name}: request not found after pipeline`);
+  if (expect.status) assert(r!.status === expect.status, `${name}: status ${r!.status} !== ${expect.status}`);
+  if (expect.severity)
+    assert(r!.overallSeverity === expect.severity, `${name}: severity ${r!.overallSeverity} !== ${expect.severity}`);
+  if (expect.typedConfirm !== undefined)
+    assert(
+      r!.approval.requiresTypedConfirm === expect.typedConfirm,
+      `${name}: typedConfirm ${r!.approval.requiresTypedConfirm} !== ${expect.typedConfirm}`,
+    );
   return rec.id;
 }
 
@@ -31,6 +50,7 @@ async function main() {
     "smoke: add nullable column",
     "ALTER TABLE public.users ADD COLUMN nickname text;",
     "ALTER TABLE public.users DROP COLUMN nickname;",
+    { status: "awaiting_approval", severity: "green" },
   );
 
   // 2) DANGEROUS — drop a column (red, irreversible) → typed_confirm.
@@ -38,6 +58,7 @@ async function main() {
     "smoke: drop legacy_notes",
     "ALTER TABLE public.users DROP COLUMN legacy_notes;",
     "ALTER TABLE public.users ADD COLUMN legacy_notes text;",
+    { status: "awaiting_approval", severity: "red", typedConfirm: true },
   );
 
   // 3) BLOCKED — unbounded delete (whole-dataset destruction).
@@ -45,6 +66,7 @@ async function main() {
     "smoke: unbounded delete",
     "DELETE FROM public.orders;",
     "-- no rollback",
+    { status: "blocked", severity: "red" },
   );
 
   // Apply the safe one through the guarded executor (requires approval first).
@@ -54,7 +76,9 @@ async function main() {
   const result = await applyMigration(safeId, { targetUrl: TARGET });
   console.log(`apply result: ${result.status}`);
   console.log(result.logs);
+  assert(result.status === "applied", `guarded apply expected 'applied', got '${result.status}'`);
 
+  console.log("\n✓ All smoke assertions passed.");
   process.exit(0);
 }
 

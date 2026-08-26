@@ -30,29 +30,45 @@ async function main() {
 
   console.log(`→ Connected to sentinel-db: ${redact(DATABASE_URL)}`);
 
+  // Guard: this seeder WIPES the control plane. Refuse to run against a DB that
+  // already has data unless --reset is passed explicitly.
+  const RESET = process.argv.includes("--reset");
+  const existing = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
+  if (existing[0].count > 0 && !RESET) {
+    console.error(
+      `✗ Refusing to seed: sentinel-db already has ${existing[0].count} migration requests. ` +
+        `Re-run with --reset to wipe and reseed the demo data.`,
+    );
+    await pool.end();
+    process.exit(1);
+  }
+
+  // Everything below runs in ONE transaction — a mid-seed failure never leaves
+  // the control plane half-cleared or half-populated.
+  await db.transaction(async (tx) => {
   // Clear existing data (idempotent re-seed)
   console.log("→ Clearing existing demo data…");
-  await db.delete(auditEvent);
-  await db.delete(approval);
-  await db.delete(preflightResult);
-  await db.delete(blastFinding);
-  await db.delete(blastReport);
-  await db.delete(qodoReview);
-  await db.delete(shadowRun);
-  await db.delete(generatedArtifact);
-  await db.delete(migrationRequest);
-  await db.delete(targetDatabase);
+  await tx.delete(auditEvent);
+  await tx.delete(approval);
+  await tx.delete(preflightResult);
+  await tx.delete(blastFinding);
+  await tx.delete(blastReport);
+  await tx.delete(qodoReview);
+  await tx.delete(shadowRun);
+  await tx.delete(generatedArtifact);
+  await tx.delete(migrationRequest);
+  await tx.delete(targetDatabase);
 
   // ── Target databases ──────────────────────────────────────────────────
   console.log("→ Inserting target databases…");
-  const [prodTarget] = await db.insert(targetDatabase).values({
+  const [prodTarget] = await tx.insert(targetDatabase).values({
     name: "Production Orders DB",
     engine: "postgres",
     connectionAlias: "prod-orders-db",
     connectionUrl: process.env.TARGET_DB_URL ?? "postgres://postgres:postgres@localhost:5433/prod",
   }).returning();
 
-  const [stagingTarget] = await db.insert(targetDatabase).values({
+  const [stagingTarget] = await tx.insert(targetDatabase).values({
     name: "Staging Orders DB",
     engine: "postgres",
     connectionAlias: "staging-orders-db",
@@ -63,7 +79,7 @@ async function main() {
 
   // ── Migration 1: Drop legacy_notes (RED, awaiting_approval) ───────────
   console.log("→ Seeding migration: Drop legacy_notes…");
-  const [req1] = await db.insert(migrationRequest).values({
+  const [req1] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "ALTER TABLE public.users DROP COLUMN legacy_notes;" },
@@ -74,7 +90,7 @@ async function main() {
     updatedAt: hoursAgo(1),
   }).returning();
 
-  const [art1] = await db.insert(generatedArtifact).values({
+  const [art1] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req1.id,
     version: 1,
     upSql: "ALTER TABLE public.users DROP COLUMN legacy_notes;",
@@ -84,14 +100,14 @@ async function main() {
     createdAt: hoursAgo(1),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art1.id,
     verdict: "passed_with_warnings",
     summary: "Migration syntax is valid. Consider a two-phase drop.",
     findings: ["Consider a two-phase drop (stop writing, then drop next release)."],
   });
 
-  const [shadow1] = await db.insert(shadowRun).values({
+  const [shadow1] = await tx.insert(shadowRun).values({
     migrationRequestId: req1.id,
     generatedArtifactId: art1.id,
     status: "succeeded",
@@ -101,7 +117,7 @@ async function main() {
     createdAt: hoursAgo(1),
   }).returning();
 
-  const [blast1] = await db.insert(blastReport).values({
+  const [blast1] = await tx.insert(blastReport).values({
     shadowRunId: shadow1.id,
     overallSeverity: "red",
     totalRowsAffected: 1204338,
@@ -110,7 +126,7 @@ async function main() {
     createdAt: hoursAgo(1),
   }).returning();
 
-  await db.insert(blastFinding).values({
+  await tx.insert(blastFinding).values({
     blastReportId: blast1.id,
     statementIndex: 0,
     statementSql: "ALTER TABLE users DROP COLUMN legacy_notes",
@@ -119,7 +135,7 @@ async function main() {
     note: "Drops a column — data unrecoverable.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req1.id,
     decision: "pending",
     requiresTypedConfirm: true,
@@ -129,7 +145,7 @@ async function main() {
 
   // ── Migration 2: Add last_login_at (GREEN, awaiting_approval) ─────────
   console.log("→ Seeding migration: Add last_login_at…");
-  const [req2] = await db.insert(migrationRequest).values({
+  const [req2] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;" },
@@ -140,7 +156,7 @@ async function main() {
     updatedAt: hoursAgo(2),
   }).returning();
 
-  const [art2] = await db.insert(generatedArtifact).values({
+  const [art2] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req2.id,
     version: 1,
     upSql: "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;",
@@ -150,13 +166,13 @@ async function main() {
     createdAt: hoursAgo(2),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art2.id,
     verdict: "passed",
     findings: [],
   });
 
-  const [shadow2] = await db.insert(shadowRun).values({
+  const [shadow2] = await tx.insert(shadowRun).values({
     migrationRequestId: req2.id,
     generatedArtifactId: art2.id,
     status: "succeeded",
@@ -166,7 +182,7 @@ async function main() {
     createdAt: hoursAgo(2),
   }).returning();
 
-  const [blast2] = await db.insert(blastReport).values({
+  const [blast2] = await tx.insert(blastReport).values({
     shadowRunId: shadow2.id,
     overallSeverity: "green",
     totalRowsAffected: 0,
@@ -175,7 +191,7 @@ async function main() {
     createdAt: hoursAgo(2),
   }).returning();
 
-  await db.insert(blastFinding).values({
+  await tx.insert(blastFinding).values({
     blastReportId: blast2.id,
     statementIndex: 0,
     statementSql: "ALTER TABLE users ADD COLUMN last_login_at timestamptz",
@@ -183,7 +199,7 @@ async function main() {
     note: "Metadata-only in Postgres 11+.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req2.id,
     decision: "pending",
     requiresTypedConfirm: false,
@@ -192,7 +208,7 @@ async function main() {
 
   // ── Migration 3: Index orders(created_at) — APPLIED ───────────────────
   console.log("→ Seeding migration: Index orders(created_at)…");
-  const [req3] = await db.insert(migrationRequest).values({
+  const [req3] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "CREATE INDEX CONCURRENTLY idx_orders_created_at ON public.orders (created_at);" },
@@ -203,7 +219,7 @@ async function main() {
     updatedAt: hoursAgo(25.5),
   }).returning();
 
-  const [art3] = await db.insert(generatedArtifact).values({
+  const [art3] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req3.id,
     version: 1,
     upSql: "CREATE INDEX CONCURRENTLY idx_orders_created_at ON public.orders (created_at);",
@@ -213,13 +229,13 @@ async function main() {
     createdAt: hoursAgo(26),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art3.id,
     verdict: "passed",
     findings: [],
   });
 
-  const [shadow3] = await db.insert(shadowRun).values({
+  const [shadow3] = await tx.insert(shadowRun).values({
     migrationRequestId: req3.id,
     generatedArtifactId: art3.id,
     status: "succeeded",
@@ -227,7 +243,7 @@ async function main() {
     createdAt: hoursAgo(26),
   }).returning();
 
-  const [blast3] = await db.insert(blastReport).values({
+  const [blast3] = await tx.insert(blastReport).values({
     shadowRunId: shadow3.id,
     overallSeverity: "green",
     totalRowsAffected: 0,
@@ -236,7 +252,7 @@ async function main() {
     createdAt: hoursAgo(26),
   }).returning();
 
-  await db.insert(blastFinding).values({
+  await tx.insert(blastFinding).values({
     blastReportId: blast3.id,
     statementIndex: 0,
     statementSql: "CREATE INDEX CONCURRENTLY",
@@ -244,7 +260,7 @@ async function main() {
     note: "Non-blocking index build.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req3.id,
     decision: "approved",
     approver: "sam.chawla26@gmail.com",
@@ -254,7 +270,7 @@ async function main() {
 
   // ── Migration 4: SET NOT NULL — APPLIED ───────────────────────────────
   console.log("→ Seeding migration: Backfill + SET NOT NULL…");
-  const [req4] = await db.insert(migrationRequest).values({
+  const [req4] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "UPDATE public.users SET full_name = 'unknown' WHERE full_name IS NULL;\nALTER TABLE public.users ALTER COLUMN full_name SET NOT NULL;" },
@@ -265,7 +281,7 @@ async function main() {
     updatedAt: hoursAgo(48),
   }).returning();
 
-  const [art4] = await db.insert(generatedArtifact).values({
+  const [art4] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req4.id,
     version: 1,
     upSql: "UPDATE public.users SET full_name = 'unknown' WHERE full_name IS NULL;\nALTER TABLE public.users ALTER COLUMN full_name SET NOT NULL;",
@@ -275,13 +291,13 @@ async function main() {
     createdAt: hoursAgo(49),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art4.id,
     verdict: "passed_with_warnings",
     findings: ["Prefer NOT VALID → VALIDATE for very large tables."],
   });
 
-  const [shadow4] = await db.insert(shadowRun).values({
+  const [shadow4] = await tx.insert(shadowRun).values({
     migrationRequestId: req4.id,
     generatedArtifactId: art4.id,
     status: "succeeded",
@@ -289,7 +305,7 @@ async function main() {
     createdAt: hoursAgo(49),
   }).returning();
 
-  const [blast4] = await db.insert(blastReport).values({
+  const [blast4] = await tx.insert(blastReport).values({
     shadowRunId: shadow4.id,
     overallSeverity: "amber",
     totalRowsAffected: 33121,
@@ -298,7 +314,7 @@ async function main() {
     createdAt: hoursAgo(49),
   }).returning();
 
-  await db.insert(blastFinding).values([
+  await tx.insert(blastFinding).values([
     {
       blastReportId: blast4.id,
       statementIndex: 0,
@@ -316,7 +332,7 @@ async function main() {
     },
   ]);
 
-  await db.insert(preflightResult).values({
+  await tx.insert(preflightResult).values({
     shadowRunId: shadow4.id,
     kind: "not_null",
     tableName: "public.users",
@@ -326,7 +342,7 @@ async function main() {
     description: "Rows where full_name IS NULL will block SET NOT NULL — backfill completed.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req4.id,
     decision: "approved",
     approver: "sam.chawla26@gmail.com",
@@ -336,7 +352,7 @@ async function main() {
 
   // ── Migration 5: Unbounded UPDATE — REJECTED ──────────────────────────
   console.log("→ Seeding migration: Deactivate all users (rejected)…");
-  const [req5] = await db.insert(migrationRequest).values({
+  const [req5] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "UPDATE public.users SET is_active = false;" },
@@ -347,7 +363,7 @@ async function main() {
     updatedAt: hoursAgo(71),
   }).returning();
 
-  const [art5] = await db.insert(generatedArtifact).values({
+  const [art5] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req5.id,
     version: 1,
     upSql: "UPDATE public.users SET is_active = false;",
@@ -357,13 +373,13 @@ async function main() {
     createdAt: hoursAgo(72),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art5.id,
     verdict: "failed",
     findings: ["Unbounded UPDATE with no WHERE clause.", "No reversible down migration possible."],
   });
 
-  const [shadow5] = await db.insert(shadowRun).values({
+  const [shadow5] = await tx.insert(shadowRun).values({
     migrationRequestId: req5.id,
     generatedArtifactId: art5.id,
     status: "succeeded",
@@ -371,7 +387,7 @@ async function main() {
     createdAt: hoursAgo(72),
   }).returning();
 
-  const [blast5] = await db.insert(blastReport).values({
+  const [blast5] = await tx.insert(blastReport).values({
     shadowRunId: shadow5.id,
     overallSeverity: "red",
     totalRowsAffected: 50000,
@@ -380,7 +396,7 @@ async function main() {
     createdAt: hoursAgo(72),
   }).returning();
 
-  await db.insert(blastFinding).values({
+  await tx.insert(blastFinding).values({
     blastReportId: blast5.id,
     statementIndex: 0,
     statementSql: "UPDATE public.users SET is_active = false",
@@ -388,7 +404,7 @@ async function main() {
     note: "Unbounded UPDATE — no WHERE clause; prior values unrecoverable.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req5.id,
     decision: "rejected",
     approver: "sam.chawla26@gmail.com",
@@ -400,7 +416,7 @@ async function main() {
 
   // ── Migration 6: Widen amount — DRY_RUNNING ───────────────────────────
   console.log("→ Seeding migration: Widen orders.amount…");
-  const [req6] = await db.insert(migrationRequest).values({
+  const [req6] = await tx.insert(migrationRequest).values({
     targetDatabaseId: stagingTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);" },
@@ -411,7 +427,7 @@ async function main() {
     updatedAt: hoursAgo(0.4),
   }).returning();
 
-  await db.insert(generatedArtifact).values({
+  await tx.insert(generatedArtifact).values({
     migrationRequestId: req6.id,
     version: 1,
     upSql: "ALTER TABLE public.orders ALTER COLUMN amount TYPE numeric(12,2);",
@@ -421,7 +437,7 @@ async function main() {
     createdAt: hoursAgo(0.4),
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req6.id,
     decision: "pending",
     requiresTypedConfirm: false,
@@ -430,7 +446,7 @@ async function main() {
 
   // ── Migration 7: Unbounded DELETE — BLOCKED (Sentinel refuses) ────────
   console.log("→ Seeding migration: Purge all orders (blocked)…");
-  const [req7] = await db.insert(migrationRequest).values({
+  const [req7] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
     intakePayload: { sql: "DELETE FROM public.orders;" },
@@ -441,7 +457,7 @@ async function main() {
     updatedAt: hoursAgo(0.2),
   }).returning();
 
-  const [art7] = await db.insert(generatedArtifact).values({
+  const [art7] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req7.id,
     version: 1,
     upSql: "DELETE FROM public.orders;",
@@ -451,14 +467,14 @@ async function main() {
     createdAt: hoursAgo(0.2),
   }).returning();
 
-  await db.insert(qodoReview).values({
+  await tx.insert(qodoReview).values({
     generatedArtifactId: art7.id,
     verdict: "failed",
     summary: "Whole-table DELETE with no WHERE clause and no recoverable rollback.",
     findings: ["Unbounded DELETE — every row destroyed.", "No reversible down migration is possible."],
   });
 
-  const [shadow7] = await db.insert(shadowRun).values({
+  const [shadow7] = await tx.insert(shadowRun).values({
     migrationRequestId: req7.id,
     generatedArtifactId: art7.id,
     status: "succeeded",
@@ -466,7 +482,7 @@ async function main() {
     createdAt: hoursAgo(0.2),
   }).returning();
 
-  const [blast7] = await db.insert(blastReport).values({
+  const [blast7] = await tx.insert(blastReport).values({
     shadowRunId: shadow7.id,
     overallSeverity: "red",
     totalRowsAffected: 842197,
@@ -475,7 +491,7 @@ async function main() {
     createdAt: hoursAgo(0.2),
   }).returning();
 
-  await db.insert(blastFinding).values({
+  await tx.insert(blastFinding).values({
     blastReportId: blast7.id,
     statementIndex: 0,
     statementSql: "DELETE FROM public.orders",
@@ -484,7 +500,7 @@ async function main() {
     note: "Unbounded DELETE — whole-dataset destruction with no recovery path. BLOCKED.",
   });
 
-  await db.insert(approval).values({
+  await tx.insert(approval).values({
     migrationRequestId: req7.id,
     decision: "pending",
     requiresTypedConfirm: false,
@@ -493,7 +509,7 @@ async function main() {
 
   // ── Audit events ──────────────────────────────────────────────────────
   console.log("→ Seeding audit events…");
-  await db.insert(auditEvent).values([
+  await tx.insert(auditEvent).values([
     { migrationRequestId: req6.id, actor: "agent", action: "shadow.dry_run.started", detail: "Shadow provisioned; running up→down on schema-only clone.", tone: "info" as const, createdAt: hoursAgo(0.4) },
     { migrationRequestId: req1.id, actor: "agent", action: "gate.paused", detail: "RED verdict — irreversible DROP COLUMN. Awaiting human approval (typed confirm required).", tone: "red" as const, createdAt: hoursAgo(1) },
     { migrationRequestId: req2.id, actor: "agent", action: "gate.paused", detail: "GREEN verdict — rollback proven on shadow. Awaiting approval.", tone: "info" as const, createdAt: hoursAgo(2) },
@@ -507,12 +523,13 @@ async function main() {
   ]);
 
   // ── Summary ───────────────────────────────────────────────────────────
-  const reqCount = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
-  const evCount = await db.select({ count: sql<number>`count(*)::int` }).from(auditEvent);
+  const reqCount = await tx.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
+  const evCount = await tx.select({ count: sql<number>`count(*)::int` }).from(auditEvent);
 
   console.log(`\n✓ Sentinel DB seeded successfully`);
   console.log(`  migration_request: ${reqCount[0].count}`);
   console.log(`  audit_event:       ${evCount[0].count}`);
+  });
 
   await pool.end();
 }
