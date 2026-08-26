@@ -13,10 +13,15 @@
  * If any guard is missing at runtime, the feature must not be exposed (ADR-009).
  */
 import type { Client } from "pg";
-import { splitStatements } from "./blast";
+import { splitStatements, codeOnly } from "./blast";
 
 const FORBIDDEN =
   /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|DROP|ALTER|CREATE|GRANT|REVOKE|COPY|CALL|DO|VACUUM|REINDEX|CLUSTER|LOCK|COMMENT|SECURITY\s+LABEL|REFRESH|SET|RESET|BEGIN|START\s+TRANSACTION|COMMIT|ROLLBACK|SAVEPOINT|ABORT)\b/i;
+
+// State-mutating / session-escaping functions that survive a read-only txn +
+// rollback (session advisory locks, sequence mutation, config, file/network I/O).
+const FORBIDDEN_FUNCTIONS =
+  /\b(pg_advisory\w*|nextval|setval|set_config|dblink\w*|lo_import|lo_export|pg_read_file|pg_ls_dir|pg_sleep)\b/i;
 
 export class ReadOnlyViolation extends Error {}
 
@@ -28,14 +33,20 @@ export function assertReadOnly(sql: string): void {
     throw new ReadOnlyViolation("Only a single statement is allowed (no ';'-chaining).");
   }
   const stmt = statements[0];
-  const head = stmt.trimStart().toUpperCase();
+  // Keyword/function checks run on the code-only form so a harmless returned
+  // literal — SELECT 'DELETE', SELECT $$DROP TABLE$$ — is not misread as a write.
+  const code = codeOnly(stmt);
+  const head = code.trimStart().toUpperCase();
   if (!/^(SELECT|WITH)\b/.test(head)) {
     throw new ReadOnlyViolation("Read-only queries only — must start with SELECT or WITH.");
   }
   // `WITH ... ( ... )` CTEs can hide a writable statement (INSERT/UPDATE/DELETE
   // inside a CTE), so scan the whole thing for write/DDL keywords too.
-  if (FORBIDDEN.test(stmt)) {
+  if (FORBIDDEN.test(code)) {
     throw new ReadOnlyViolation("Query contains a write or DDL keyword — rejected.");
+  }
+  if (FORBIDDEN_FUNCTIONS.test(code)) {
+    throw new ReadOnlyViolation("Query calls a state-mutating or session-escaping function — rejected.");
   }
 }
 

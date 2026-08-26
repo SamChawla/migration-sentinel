@@ -70,10 +70,38 @@ export async function schemaFingerprint(
       ORDER BY tablename, indexname`,
     [schema],
   );
+  // Views, functions and triggers are migration-relevant too: a faulty down that
+  // leaves a view/function/trigger behind must NOT read as schema-restored.
+  const views = await client.query(
+    `SELECT table_name, view_definition
+       FROM information_schema.views
+      WHERE table_schema = $1
+      ORDER BY table_name`,
+    [schema],
+  );
+  const routines = await client.query(
+    `SELECT p.proname, pg_get_function_identity_arguments(p.oid) AS args, p.prosrc
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = $1
+      ORDER BY 1, 2`,
+    [schema],
+  );
+  const triggers = await client.query(
+    `SELECT t.tgname, c.relname AS table_name, pg_get_triggerdef(t.oid) AS def
+       FROM pg_trigger t
+       JOIN pg_class c ON c.oid = t.tgrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = $1 AND NOT t.tgisinternal
+      ORDER BY 1, 2`,
+    [schema],
+  );
   const canonical = JSON.stringify({
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,
+    views: views.rows,
+    routines: routines.rows,
+    triggers: triggers.rows,
   });
   return createHash("sha256").update(canonical).digest("hex");
 }

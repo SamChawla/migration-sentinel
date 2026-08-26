@@ -97,3 +97,46 @@ describe("requiredPreflightChecks", () => {
     expect(checks[0].probeSql).toContain("email IS NOT NULL");
   });
 });
+
+describe("Round 2 regressions", () => {
+  it("DROP SCHEMA CASCADE is blocked (#1)", () => {
+    const c = classifyStatement("DROP SCHEMA app CASCADE");
+    expect(c.severity).toBe("red");
+    expect(c.blocking).toBe(true);
+  });
+
+  it("allows a SELECT that returns a keyword literal (#10)", () => {
+    expect(() => assertReadOnly("SELECT 'DELETE' AS word")).not.toThrow();
+    expect(() => assertReadOnly("SELECT $$DROP TABLE$$ AS t")).not.toThrow();
+  });
+
+  it("rejects a session advisory lock in a read query (#2)", () => {
+    expect(() => assertReadOnly("SELECT pg_advisory_lock(1)")).toThrow();
+    expect(() => assertReadOnly("SELECT nextval('s')")).toThrow();
+  });
+
+  it("produces a preflight check for a quoted identifier with spaces (#7)", () => {
+    const checks = requiredPreflightChecks('ALTER TABLE "User Accounts" ALTER COLUMN "email address" SET NOT NULL');
+    expect(checks).toHaveLength(1);
+    expect(checks[0].kind).toBe("not_null");
+  });
+
+  it("checks ALL comma-separated actions in one ALTER (#6)", () => {
+    const checks = requiredPreflightChecks("ALTER TABLE users ALTER COLUMN email SET NOT NULL, ADD UNIQUE (handle)");
+    const kinds = checks.map((c) => c.kind).sort();
+    expect(kinds).toEqual(["not_null", "unique"]);
+  });
+
+  it("UNIQUE NULLS NOT DISTINCT keeps null keys in the probe (#8)", () => {
+    const checks = requiredPreflightChecks("ALTER TABLE users ADD UNIQUE NULLS NOT DISTINCT (email)");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).not.toContain("IS NOT NULL");
+  });
+
+  it("flags an implicit-PK foreign key for review instead of skipping (#4)", () => {
+    const checks = requiredPreflightChecks("ALTER TABLE orders ADD FOREIGN KEY (user_id) REFERENCES users");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].kind).toBe("foreign_key");
+    expect(checks[0].probeSql).toBeNull();
+  });
+});

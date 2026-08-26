@@ -155,7 +155,8 @@ export function classifyStatement(statement: string): StatementClassification {
   // Whole-dataset destruction with no recovery path → Sentinel refuses it
   // outright. A DROP COLUMN is irreversible too, but it is a scoped, named loss
   // the operator can accept with a typed confirmation, so it is NOT blocking.
-  const isWholeObjectDestroy = /\bDROP\s+TABLE\b/.test(u) || /\bTRUNCATE\b/.test(u);
+  const isWholeObjectDestroy =
+    /\bDROP\s+TABLE\b/.test(u) || /\bTRUNCATE\b/.test(u) || /\bDROP\s+SCHEMA\b/.test(u);
   const isUnboundedDml =
     (/^\s*UPDATE\b/i.test(code) || /^\s*DELETE\b/i.test(code)) && !/\bWHERE\b/.test(u);
 
@@ -176,6 +177,8 @@ export function classifyStatement(statement: string): StatementClassification {
   });
 
   // ── Irreversible / data-loss (RED) ────────────────────────────────────
+  if (/\bDROP\s+SCHEMA\b/.test(u))
+    return make("red", "irreversible", true, "Drops a schema — recursively destroys its tables and all their data.", "AccessExclusiveLock");
   if (/\bDROP\s+TABLE\b/.test(u))
     return make("red", "irreversible", true, "Drops a table — all rows lost.", "AccessExclusiveLock");
   if (/\bTRUNCATE\b/.test(u))
