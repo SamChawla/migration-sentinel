@@ -59,7 +59,10 @@ export function isNonTransactional(upSql: string): boolean {
 export function findExecutorSubversion(upSql: string): string | null {
   for (const stmt of splitStatements(upSql)) {
     const c = codeOnly(stmt).trim();
-    if (/^(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT|SET\s+CONSTRAINTS|ABORT)\b/i.test(c))
+    // NOTE: SET CONSTRAINTS is intentionally NOT here — it only changes the
+    // timing of deferrable constraint checks WITHIN the executor's transaction;
+    // it neither commits nor escapes it, so it's a legitimate migration statement.
+    if (/^(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT|ABORT)\b/i.test(c))
       return `transaction-control statement ("${stmt.slice(0, 40)}") — the executor owns the transaction`;
     if (/^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout)\b/i.test(c))
       return `timeout override ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
@@ -127,6 +130,10 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   };
   const lockTimeoutMs = posInt(opts.lockTimeoutMs ?? process.env.APPLY_LOCK_TIMEOUT_MS, 3000);
   const statementTimeoutMs = posInt(opts.statementTimeoutMs ?? process.env.APPLY_STATEMENT_TIMEOUT_MS, 30000);
+  // Bound the CONNECT itself — lock_timeout/statement_timeout only take effect
+  // AFTER a session exists, so a stalled DNS/TCP/TLS handshake would otherwise
+  // leave a claimed request 'applying' indefinitely.
+  const connectTimeoutMs = posInt(process.env.APPLY_CONNECT_TIMEOUT_MS, 10000);
 
   // One-shot: atomically flip approved → applying. If we don't win the claim,
   // the request was already applied (or isn't approved) — never reapply.
@@ -174,7 +181,7 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
         (nonTransactional ? " (autocommit — non-transactional statement present)" : ""),
     );
 
-    const client = new Client({ connectionString: targetUrl });
+    const client = new Client({ connectionString: targetUrl, connectionTimeoutMillis: connectTimeoutMs });
     try {
       await client.connect();
       await client.query(`SET lock_timeout = ${Number(lockTimeoutMs)}`);

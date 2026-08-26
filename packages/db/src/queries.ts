@@ -867,7 +867,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return {
     awaiting: countMap.get("awaiting_approval") ?? 0,
     applied: countMap.get("applied") ?? 0,
-    blocked: (countMap.get("blocked") ?? 0) + (countMap.get("rejected") ?? 0) + (countMap.get("failed") ?? 0),
+    // "Blocked at gate" means exactly status='blocked' (whole-dataset destruction
+    // Sentinel refuses). Human rejections and pipeline/apply failures are NOT
+    // gate blocks and must not inflate this metric.
+    blocked: countMap.get("blocked") ?? 0,
     proven: provenResult?.count ?? 0,
   };
 }

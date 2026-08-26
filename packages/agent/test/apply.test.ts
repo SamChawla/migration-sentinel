@@ -59,6 +59,10 @@ describe("findExecutorSubversion — guarded-apply contract (R6 #1/#2)", () => {
     expect(findExecutorSubversion("ALTER TABLE users ADD COLUMN age int; CREATE INDEX i ON users (age);")).toBeNull();
   });
 
+  it("does NOT flag SET CONSTRAINTS — it stays within the executor txn (R7 #1)", () => {
+    expect(findExecutorSubversion("SET CONSTRAINTS ALL DEFERRED; UPDATE t SET x = 1 WHERE id = 1;")).toBeNull();
+  });
+
   it("does NOT flag COMMIT appearing in a comment or string", () => {
     expect(findExecutorSubversion("ALTER TABLE t ADD COLUMN note text DEFAULT 'please COMMIT often'")).toBeNull();
     expect(findExecutorSubversion("-- remember to COMMIT\nALTER TABLE t ADD COLUMN x int")).toBeNull();
