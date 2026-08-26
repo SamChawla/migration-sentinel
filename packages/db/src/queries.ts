@@ -811,13 +811,8 @@ export async function finishApplyRun(
 
 // ── Audit ────────────────────────────────────────────────────────────────
 
-export async function listAuditEvents(): Promise<AuditEventRow[]> {
-  const rows = await db
-    .select()
-    .from(auditEvent)
-    .orderBy(desc(auditEvent.createdAt));
-
-  return rows.map((e) => ({
+function toAuditRow(e: typeof auditEvent.$inferSelect): AuditEventRow {
+  return {
     id: e.id,
     at: toIso(e.createdAt),
     actor: e.actor,
@@ -825,7 +820,35 @@ export async function listAuditEvents(): Promise<AuditEventRow[]> {
     requestId: e.migrationRequestId,
     detail: e.detail ?? "",
     tone: (e.tone as "green" | "red" | "info" | "neutral") ?? "neutral",
-  }));
+  };
+}
+
+export async function listAuditEvents(limit = 100): Promise<AuditEventRow[]> {
+  // Bounded — the audit log grows without limit; callers render only a handful.
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    .orderBy(desc(auditEvent.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 500));
+  return rows.map(toAuditRow);
+}
+
+/** Audit events for ONE request, filtered in SQL and bounded — used by the live
+ *  SSE poller so a per-second tick never scans the whole audit table. */
+export async function listAuditEventsForRequest(requestId: string, limit = 50): Promise<AuditEventRow[]> {
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    .where(eq(auditEvent.migrationRequestId, requestId))
+    .orderBy(desc(auditEvent.createdAt))
+    .limit(Math.min(Math.max(limit, 1), 200));
+  return rows.map(toAuditRow);
+}
+
+/** Total number of migration requests (for accurate pagination totals). */
+export async function countRequests(): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
+  return row?.count ?? 0;
 }
 
 export async function insertAuditEvent(input: {

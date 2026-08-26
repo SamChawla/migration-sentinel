@@ -27,13 +27,26 @@ export interface Session {
   user: string;
 }
 
+/** decodeURIComponent that never throws — a malformed percent-encoding in a
+ *  request-controlled cookie (e.g. a bare "%") must produce an unauthenticated
+ *  result, not a URIError that 500s every protected page/API for that client. */
+function safeDecode(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
 /** Returns the authenticated approver, or null if the request has no valid session. */
 export async function getSession(): Promise<Session | null> {
   const jar = await cookies();
-  const session = jar.get(SESSION_COOKIE)?.value;
-  if (!session || !credentialMatches(decodeURIComponent(session))) return null;
-  const user = jar.get(USER_COOKIE)?.value;
-  return { user: user ? decodeURIComponent(user) : "approver" };
+  const raw = jar.get(SESSION_COOKIE)?.value;
+  const session = raw != null ? safeDecode(raw) : null;
+  if (session === null || !credentialMatches(session)) return null;
+  const userRaw = jar.get(USER_COOKIE)?.value;
+  const user = userRaw != null ? safeDecode(userRaw) : null;
+  return { user: user || "approver" };
 }
 
 export const SESSION_COOKIE_NAME = SESSION_COOKIE;

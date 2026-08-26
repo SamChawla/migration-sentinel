@@ -3,7 +3,7 @@
  * the control-plane database as the pipeline advances, and closes when the
  * request reaches a terminal state, on client disconnect, or a safety timeout.
  */
-import { getRequest, listAuditEvents } from "@sentinel/db/queries";
+import { getRequest, listAuditEventsForRequest } from "@sentinel/db/queries";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -69,7 +69,8 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
             lastStatus = rec.status;
             send("status", { status: rec.status });
           }
-          const events = (await listAuditEvents()).filter((e) => e.requestId === id);
+          // Targeted, bounded query — never scans the whole audit table per tick.
+          const events = await listAuditEventsForRequest(id, 50);
           for (const e of events.reverse()) {
             if (!seenAudit.has(e.id)) {
               seenAudit.add(e.id);

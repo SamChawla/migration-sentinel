@@ -10,15 +10,21 @@ const FILTERS = [
   { key: "awaiting_approval", label: "Awaiting" },
   { key: "in_flight", label: "In flight" },
   { key: "applied", label: "Applied" },
+  { key: "blocked", label: "Blocked" },
   { key: "rejected", label: "Rejected" },
+  { key: "failed", label: "Failed" },
 ] as const;
 
 function matchesFilter(r: RequestRecord, f: string): boolean {
+  // Each filter maps to a DISTINCT outcome — never conflate approved with
+  // applied, or human rejections with pipeline/apply failures.
   if (f === "all") return true;
   if (f === "awaiting_approval") return r.status === "awaiting_approval";
-  if (f === "in_flight") return ["received", "generating", "reviewing", "dry_running", "applying"].includes(r.status);
-  if (f === "applied") return ["applied", "approved"].includes(r.status);
-  if (f === "rejected") return ["rejected", "failed", "rolled_back"].includes(r.status);
+  if (f === "in_flight") return ["received", "generating", "reviewing", "dry_running", "approved", "applying"].includes(r.status);
+  if (f === "applied") return r.status === "applied";
+  if (f === "blocked") return r.status === "blocked";
+  if (f === "rejected") return r.status === "rejected";
+  if (f === "failed") return ["failed", "rolled_back"].includes(r.status);
   return true;
 }
 

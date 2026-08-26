@@ -289,7 +289,11 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
             <div className="glass" style={{ flex: 1, padding: 14 }}>
               <div className="hud-label">Rollback</div>
               <div style={{ textAlign: "center", marginTop: 8, fontSize: 16, fontWeight: 600 }}>
-                {r.rollbackVerified ? (
+                {!analyzed ? (
+                  // No shadow rollback test has run yet — don't assert a definitive
+                  // data-loss verdict for a pending/early-failed request.
+                  <span style={{ color: "var(--text-dim)" }}>PENDING</span>
+                ) : r.rollbackVerified ? (
                   <span style={{ color: "var(--safe)" }}>VERIFIED</span>
                 ) : (
                   <span style={{ color: "var(--danger)" }}>UNRECOVERABLE</span>
