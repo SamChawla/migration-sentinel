@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1787572390945,
+      "tag": "0000_gigantic_scorpion",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787656280341,
+      "tag": "0001_huge_marvex",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787660029711,
+      "tag": "0002_heavy_major_mapleleaf",
+      "breakpoints": true
+    }
+  ]
+}

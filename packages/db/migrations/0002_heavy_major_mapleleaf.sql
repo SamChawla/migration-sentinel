@@ -1,0 +1,1 @@
+ALTER TYPE "public"."request_status" ADD VALUE 'blocked' BEFORE 'approved';
