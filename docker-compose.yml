@@ -37,7 +37,11 @@ services:
       # and backs SHADOW_ADMIN_URL, which CREATE/DROPs the ephemeral clones.
       POSTGRES_DB: shadow
     ports: ["5434:5432"]
-    # ephemeral by design — no named volume, wiped on `docker compose down`
+    # Ephemeral by design: mount PGDATA as tmpfs so every start is a FRESH init.
+    # (The postgres image keeps an anonymous volume across recreation, which
+    # would skip init and leave POSTGRES_DB=shadow uncreated for existing stacks.)
+    tmpfs:
+      - /var/lib/postgresql/data
 
 volumes:
   sentinel_data:
