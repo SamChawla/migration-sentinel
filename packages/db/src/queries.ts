@@ -92,13 +92,18 @@ function toIso(d: Date | null | undefined): string {
  * List all migration requests, hydrated with the latest artifact, blast
  * report, approval, and shadow run. Ordered by created_at DESC.
  */
-export async function listRequests(): Promise<RequestRecord[]> {
+export async function listRequests(opts: { limit?: number; offset?: number } = {}): Promise<RequestRecord[]> {
+  // Bounded by default so the list path can't grow unbounded with history.
+  const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const offset = Math.max(opts.offset ?? 0, 0);
   const rows = await db
     .select()
     .from(migrationRequest)
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .leftJoin(approval, eq(approval.migrationRequestId, migrationRequest.id))
-    .orderBy(desc(migrationRequest.createdAt));
+    .orderBy(desc(migrationRequest.createdAt))
+    .limit(limit)
+    .offset(offset);
 
   const records: RequestRecord[] = [];
 
@@ -121,6 +126,7 @@ export async function listRequests(): Promise<RequestRecord[]> {
         .select()
         .from(qodoReview)
         .where(eq(qodoReview.generatedArtifactId, artifact.id))
+        .orderBy(desc(qodoReview.createdAt))
         .limit(1)
         .then((r) => r[0] ?? null);
     }
@@ -459,7 +465,11 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .where(eq(migrationRequest.id, requestId))
     .limit(1);
-  return rows[0]?.url ?? process.env.TARGET_DB_URL ?? null;
+  // Unknown request → null. Only fall back to the global URL for a request that
+  // resolves but whose target has no stored URL, never for a stale/invalid id
+  // (which must not silently connect to the default database).
+  if (rows.length === 0) return null;
+  return rows[0].url ?? process.env.TARGET_DB_URL ?? null;
 }
 
 export interface IntakeRow {

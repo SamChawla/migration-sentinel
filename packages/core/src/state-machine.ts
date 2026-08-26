@@ -19,7 +19,11 @@ const TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   rejected: [],
   applying: ["applied", "failed"],
   applied: ["rolled_back"],
-  failed: ["rolled_back"],
+  // Terminal: `failed` is reachable from pre-apply states (generating/reviewing/
+  // dry_running) where nothing was applied, so it must NOT permit rolled_back.
+  // An apply that fails already rolls back inside its own transaction; a manual
+  // revert of an APPLIED migration uses applied → rolled_back.
+  failed: [],
   rolled_back: [],
 };
 
