@@ -433,13 +433,23 @@ async function main() {
     updatedAt: hoursAgo(0.4),
   }).returning();
 
-  await tx.insert(generatedArtifact).values({
+  const [art6] = await tx.insert(generatedArtifact).values({
     migrationRequestId: req6.id,
     version: 1,
     upSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE bigint;",
     downSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE integer;",
     reversibility: "reversible",
     model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(0.4),
+  }).returning();
+
+  // A dry_running request has a shadow_run in progress (started, not finished) —
+  // otherwise hydration renders fabricated green/rollbackVerified=false defaults.
+  await tx.insert(shadowRun).values({
+    migrationRequestId: req6.id,
+    generatedArtifactId: art6.id,
+    status: "running",
+    startedAt: hoursAgo(0.4),
     createdAt: hoursAgo(0.4),
   });
 
