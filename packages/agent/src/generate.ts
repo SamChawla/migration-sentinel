@@ -27,16 +27,28 @@ export interface GenerateParams {
 }
 
 function extractJson(text: string): Record<string, unknown> | null {
-  const end = text.lastIndexOf("}");
-  if (end === -1) return null;
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  // Scan forward tracking string state so braces INSIDE a JSON string value
+  // (e.g. SQL containing `{` / `}`) don't throw off the depth count.
   let depth = 0;
-  for (let i = end; i >= 0; i--) {
-    if (text[i] === "}") depth++;
-    else if (text[i] === "{") {
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
       depth--;
       if (depth === 0) {
         try {
-          return JSON.parse(text.slice(i, end + 1)) as Record<string, unknown>;
+          return JSON.parse(text.slice(start, i + 1)) as Record<string, unknown>;
         } catch {
           return null;
         }

@@ -560,6 +560,21 @@ export async function setRequestStatus(requestId: string, status: RequestStatus)
     .where(eq(migrationRequest.id, requestId));
 }
 
+/**
+ * Atomically claim a request for apply: flip 'approved' → 'applying' in a single
+ * conditional UPDATE. Returns true only for the caller that won the transition;
+ * a retry after success or a concurrent second caller sees status !== 'approved'
+ * and gets false, making the guarded apply strictly one-shot.
+ */
+export async function claimRequestForApply(requestId: string): Promise<boolean> {
+  const rows = await db
+    .update(migrationRequest)
+    .set({ status: "applying", updatedAt: new Date() })
+    .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, "approved")))
+    .returning({ id: migrationRequest.id });
+  return rows.length === 1;
+}
+
 export interface PersistSafetyInput {
   requestId: string;
   overallSeverity: Severity;

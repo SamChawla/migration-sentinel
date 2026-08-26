@@ -6,6 +6,7 @@
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
     "@sentinel/core": "workspace:*",
+    "@sentinel/db": "workspace:*",
     "@sentinel/qodo": "workspace:*",
     "@sentinel/shadow": "workspace:*",
     "@truefoundry/trueforge-sdk": "^0.1.0",

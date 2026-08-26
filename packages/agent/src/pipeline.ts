@@ -87,6 +87,9 @@ export async function runSafetyPipeline(input: SafetyPipelineInput): Promise<Saf
     hasBlockingStatement: classification.hasBlockingStatement,
     dataWillFail: willFailOnData,
     dataUnknown,
+    // A failed rollback proof must affect the gate — a green migration whose
+    // down doesn't restore the schema is not recoverable and can't be auto.
+    rollbackVerified: rollback.rollbackVerified,
   });
 
   return {
