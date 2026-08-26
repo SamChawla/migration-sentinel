@@ -292,7 +292,11 @@ async function main() {
     version: 1,
     upSql: "UPDATE public.users SET full_name = 'unknown' WHERE full_name IS NULL;\nALTER TABLE public.users ALTER COLUMN full_name SET NOT NULL;",
     downSql: "ALTER TABLE public.users ALTER COLUMN full_name DROP NOT NULL;",
-    reversibility: "reversible",
+    // LOSSY, not reversible: the down restores the SCHEMA (drops NOT NULL) but the
+    // backfill overwrote every NULL full_name with 'unknown' and no down can
+    // recover which rows were originally NULL. Seeding it 'reversible' would make
+    // the approval UI claim a data-rollback guarantee this artifact can't honour.
+    reversibility: "lossy",
     model: "claude-sonnet-4-20250514",
     createdAt: hoursAgo(49),
   }).returning();
@@ -307,7 +311,9 @@ async function main() {
     migrationRequestId: req4.id,
     generatedArtifactId: art4.id,
     status: "succeeded",
-    rollbackVerified: true,
+    // Schema rolled back on the shadow, but the migration is data-mutating, so the
+    // honest verdict is rollbackVerified=false (schemaRestored AND !dataMutating).
+    rollbackVerified: false,
     createdAt: hoursAgo(49),
   }).returning();
 
