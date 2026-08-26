@@ -69,8 +69,10 @@ export async function runSafetyPipeline(input: SafetyPipelineInput): Promise<Saf
     await client.connect();
     rollback = await verifyRollback(client, input.up, input.down);
   } finally {
-    await client.end();
-    await shadow.destroy();
+    // Guard client.end() so a shutdown rejection can't skip destroy() (leaking
+    // the shadow database) or mask the original verification error.
+    await client.end().catch(() => {});
+    await shadow.destroy().catch(() => {});
   }
 
   // 4. data pre-flight — exact read-only probes on the target (ADR-011)

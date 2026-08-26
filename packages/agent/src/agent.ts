@@ -24,6 +24,7 @@ import {
   getRequestTargetUrl,
   upsertGeneratedArtifact,
   setRequestStatus,
+  claimRequestForPipeline,
   persistSafetyReport,
   insertAuditEvent,
 } from "@sentinel/db/queries";
@@ -45,9 +46,15 @@ function primaryTable(upSql: string, preflightTables: string[]): string {
     const m = stmt.match(/\b(?:ALTER|DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w."]+)/i) ??
       stmt.match(/\bUPDATE\s+(?:ONLY\s+)?([\w."]+)/i) ??
       stmt.match(/\bDELETE\s+FROM\s+(?:ONLY\s+)?([\w."]+)/i) ??
-      stmt.match(/\bTRUNCATE\s+(?:TABLE\s+)?([\w."]+)/i);
+      stmt.match(/\bTRUNCATE\s+(?:TABLE\s+)?([\w."]+)/i) ??
+      // Green/metadata-only migrations (e.g. CREATE INDEX CONCURRENTLY) can also
+      // reach typed_confirm via the rollback-failure path — derive a token here too.
+      stmt.match(/\bCREATE\s+(?:UNIQUE\s+)?INDEX\b[\s\S]*?\bON\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      stmt.match(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/i) ??
+      stmt.match(/\bINSERT\s+INTO\s+([\w."]+)/i);
     if (m) return stripSchema(m[1]);
   }
+  // Non-empty fallback — the gate always has a token to require.
   return "CONFIRM";
 }
 
@@ -95,12 +102,12 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
   const req = await getRequest(requestId);
   if (!req) throw new Error(`runAgentPipeline: request ${requestId} not found`);
 
-  // Only run the analysis pipeline for a fresh request. Re-invoking it on a
-  // request that has already reached the gate or beyond must NOT reopen a
-  // completed migration (which would reset it to dry_running → awaiting_approval
-  // and leave stale approval state attached).
-  if (req.status !== "received" && req.status !== "generating") {
-    throw new Error(`runAgentPipeline: request ${requestId} is already past intake (status=${req.status}); refusing to reopen.`);
+  // Atomically claim the request (received → generating). Only the winner runs,
+  // so concurrent invocations can't both analyze and clobber state, and a
+  // completed request (status != received) can't be reopened.
+  const claimed = await claimRequestForPipeline(requestId);
+  if (!claimed) {
+    throw new Error(`runAgentPipeline: request ${requestId} not claimable (status=${req.status}); already running or past intake.`);
   }
 
   const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));

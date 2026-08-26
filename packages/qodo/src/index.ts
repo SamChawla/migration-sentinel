@@ -43,7 +43,17 @@ export interface QodoReviewInput {
   context?: string;
 }
 
-const REVIEW_TIMEOUT_MS = Number(process.env.QODO_TIMEOUT_MS ?? 120_000);
+// Positive integer only — a NaN/0/negative env value must not disable the
+// timeout (which would let a hung CLI run forever).
+const REVIEW_TIMEOUT_MS = (() => {
+  const n = Number(process.env.QODO_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 120_000;
+})();
+// Cap the SQL embedded in the prompt so a large migration can't exceed the OS
+// argv length limit (which would make execFile reject before Qodo runs).
+const MAX_SQL_CHARS = 8000;
+const capSql = (s: string): string =>
+  s.length > MAX_SQL_CHARS ? `${s.slice(0, MAX_SQL_CHARS)}\n-- …(truncated ${s.length - MAX_SQL_CHARS} chars for review)` : s;
 
 /** Resolve the Qodo CLI's JS entrypoint from the installed @qodo/command package. */
 function resolveQodoEntry(): string | null {
@@ -67,10 +77,10 @@ function buildPrompt(input: QodoReviewInput): string {
     input.context ? `Context: ${input.context}` : "",
     "",
     "-- UP migration --",
-    input.upSql || "(none)",
+    input.upSql ? capSql(input.upSql) : "(none)",
     "",
     "-- DOWN migration --",
-    input.downSql || "(none)",
+    input.downSql ? capSql(input.downSql) : "(none)",
     "",
     "Respond with ONLY a single minified JSON object and no other text, of the exact shape:",
     '{"verdict":"passed|passed_with_warnings|failed","summary":"<one sentence>","findings":[{"severity":"info|warning|error","message":"<text>"}]}',

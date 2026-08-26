@@ -575,6 +575,20 @@ export async function claimRequestForApply(requestId: string): Promise<boolean> 
   return rows.length === 1;
 }
 
+/**
+ * Atomically claim a fresh request for the analysis pipeline: flip 'received' →
+ * 'generating' in one conditional UPDATE. Only the caller that wins proceeds, so
+ * concurrent runAgentPipeline invocations can't both analyze and clobber state.
+ */
+export async function claimRequestForPipeline(requestId: string): Promise<boolean> {
+  const rows = await db
+    .update(migrationRequest)
+    .set({ status: "generating", updatedAt: new Date() })
+    .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, "received")))
+    .returning({ id: migrationRequest.id });
+  return rows.length === 1;
+}
+
 export interface PersistSafetyInput {
   requestId: string;
   overallSeverity: Severity;

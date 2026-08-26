@@ -30,12 +30,18 @@ const DUMP = process.argv.includes("--dump");
 const RECONNECT = process.argv.includes("--reconnect");
 const STATE_FILE = ".spike-state.json";
 
-// A destructive-sounding instruction to try to trigger the approval gate.
-// Point this at whatever gated tool your agent actually has (an MCP write tool,
-// a sandbox shell command, etc.). Override with SPIKE_GATED_PROMPT.
+// An instruction that should trip the approval gate — a WRITE, not a
+// destruction, by default so the spike never performs a destructive action just
+// because the gate fired. Override with SPIKE_GATED_PROMPT to target a specific
+// gated tool. The ALLOW path (actually executing the tool) additionally requires
+// SPIKE_ALLOW_DESTRUCTIVE=1 (see below).
 const GATED_PROMPT =
   process.env.SPIKE_GATED_PROMPT ??
-  "Use your available tools to delete all files in /tmp/spike-target. This is destructive — you MUST use the tool that performs the deletion.";
+  "Use your available tools to write the text 'spike-ok' to a scratch file at /tmp/spike-target/probe.txt. You MUST use the tool that performs the write.";
+// The DENY path always runs (safe). Executing the ALLOW path actually runs the
+// gated tool, so it is opt-in — otherwise a documented `pnpm spike` could perform
+// the side effect merely because the gate fired.
+const ALLOW_DESTRUCTIVE = process.env.SPIKE_ALLOW_DESTRUCTIVE === "1";
 
 const results: { name: string; ok: boolean; note?: string }[] = [];
 const record = (name: string, ok: boolean, note?: string) => {
@@ -189,7 +195,12 @@ async function checkApproval(client: TrueForge) {
     record("3a/3b. approval deny path", false, (e as Error).message);
   }
 
-  // ALLOW path (fresh session)
+  // ALLOW path (fresh session) — opt-in only: this actually EXECUTES the gated
+  // tool, so it must never run by default.
+  if (!ALLOW_DESTRUCTIVE) {
+    record("3c. resume with ALLOW", true, "skipped — set SPIKE_ALLOW_DESTRUCTIVE=1 to run the tool-executing allow path");
+    return;
+  }
   try {
     const session = await newSession(
       client,
