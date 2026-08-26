@@ -1,0 +1,14 @@
+{
+  "name": "@sentinel/agent",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@sentinel/core": "workspace:*",
+    "@sentinel/qodo": "workspace:*",
+    "@sentinel/shadow": "workspace:*",
+    "@truefoundry/trueforge-sdk": "^0.1.0",
+    "pg": "^8.13.1"
+  }
+}
