@@ -912,17 +912,23 @@ export async function listAuditEventsForRequestSince(
   since: { at: string; id: string } | null,
   limit = 100,
 ): Promise<AuditEventRow[]> {
+  // The cursor `at` came back through JS Date.toISOString() (MILLISECOND
+  // precision), but created_at is microsecond-precise. Comparing raw would make an
+  // event whose sub-ms > 0 satisfy `created_at > cursor.at` on the very next poll —
+  // re-sending it, and a full page sharing one millisecond would stall the drain.
+  // So compare (and order) on the MILLISECOND-TRUNCATED timestamp, with id as the
+  // deterministic tiebreaker within a millisecond.
   const conds = [eq(auditEvent.migrationRequestId, requestId)];
   if (since) {
     conds.push(
-      sql`(${auditEvent.createdAt}, ${auditEvent.id}) > (${since.at}::timestamptz, ${since.id}::uuid)`,
+      sql`(date_trunc('milliseconds', ${auditEvent.createdAt}), ${auditEvent.id}) > (${since.at}::timestamptz, ${since.id}::uuid)`,
     );
   }
   const rows = await db
     .select()
     .from(auditEvent)
     .where(and(...conds))
-    .orderBy(auditEvent.createdAt, auditEvent.id) // ascending — forward cursor
+    .orderBy(sql`date_trunc('milliseconds', ${auditEvent.createdAt})`, auditEvent.id) // ascending — forward cursor
     .limit(Math.min(Math.max(limit, 1), 500));
   return rows.map(toAuditRow);
 }
