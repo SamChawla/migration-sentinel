@@ -17,7 +17,7 @@ const SAFETY = [
   { rule: "RED severity requires typed confirmation", detail: "Irreversible operations (DROP, TRUNCATE, data-type narrowing) require the approver to type the exact confirmation word. The button is disabled until the input matches." },
   { rule: "Rollback is proven, not assumed", detail: "The down migration is executed on a shadow clone and the schema is diffed back to the original. If the diff doesn't match, the rollback is marked unproven." },
   { rule: "Read-only query guard", detail: "All pre-flight data probes go through a read-only guard that rejects any statement containing write operations. Catalog queries only." },
-  { rule: "Four independent guards", detail: "Blast classifier, rollback verifier, read-only guard, and preflight checks each run independently. Any single failure blocks the migration." },
+  { rule: "Every signal feeds the gate", detail: "Blast classifier, rollback verifier, read-only guard, and pre-flight checks each feed the deterministic disposition. A whole-dataset destruction is refused outright; other adverse signals (unproven rollback, failing or unprovable pre-flight) escalate the gate to a typed confirmation." },
 ];
 
 export default function Docs() {
@@ -59,7 +59,7 @@ export default function Docs() {
           </div>
           <div className="doc-step glass">
             <div className="doc-step-num">4</div>
-            <div><h3>Shadow dry-run</h3><p style={{ color: "var(--muted)" }}>The migration runs on a schema-only shadow clone. Blast radius (rows affected, lock type, estimated downtime) is measured. Rollback is tested.</p></div>
+            <div><h3>Shadow dry-run</h3><p style={{ color: "var(--muted)" }}>The migration runs on a schema-only shadow clone. Blast radius (rows affected, lock type, downtime) is <b>estimated from the target's own planner statistics</b> — no production data is copied. Rollback is tested on the clone.</p></div>
           </div>
           <div className="doc-step glass" style={{ borderColor: "var(--hold)" }}>
             <div className="doc-step-num" style={{ background: "var(--hold)", color: "var(--space-0)" }}>5</div>
@@ -67,7 +67,7 @@ export default function Docs() {
           </div>
           <div className="doc-step glass">
             <div className="doc-step-num">6</div>
-            <div><h3>Guarded apply</h3><p style={{ color: "var(--muted)" }}>On approval, the migration runs inside a transaction with four independent safety guards. Any guard failure triggers an immediate rollback.</p></div>
+            <div><h3>Guarded apply</h3><p style={{ color: "var(--muted)" }}>On approval, the migration runs with <span className="mono">lock_timeout</span> + <span className="mono">statement_timeout</span> guards. Transactional migrations run in one transaction and roll back on any error; non-transactional statements (e.g. <span className="mono">CREATE INDEX CONCURRENTLY</span>) run in autocommit and are detected + isolated so a partial change is surfaced, not silently committed.</p></div>
           </div>
           <div className="doc-step glass">
             <div className="doc-step-num">7</div>
@@ -89,7 +89,7 @@ export default function Docs() {
             <code className="mono">tool.approval_required</code> and pauses the turn. We resume it with{" "}
             <code className="mono">user.tool_approval</code> <b style={{ color: "var(--text)" }}>only</b> after our own
             independent gate (<code className="mono">packages/core</code>) records a human decision — so the model
-            can never self-approve. Blast, rollback, Qodo and pre-flight run as parallel sub-agents in the sandbox.
+            can never self-approve. Blast, rollback, Qodo and pre-flight run as independent checks the agent orchestrates.
           </p>
         </div>
       </section>
