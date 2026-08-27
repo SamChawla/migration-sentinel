@@ -33,6 +33,23 @@ async function main() {
   await client.connect();
   console.log(`→ Connected to target: ${redact(url)}`);
 
+  // GUARD: this fixture DROPS and recreates the public schema — it destroys ALL
+  // objects and data in the target. Refuse to run against a non-empty database
+  // unless --reset is passed explicitly, so a stray/misconfigured db:seed can't
+  // wipe a populated (possibly production) target.
+  const RESET = process.argv.includes("--reset");
+  const existing = await client.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'",
+  );
+  if (existing.rows[0].n > 0 && !RESET) {
+    console.error(
+      `✗ Refusing to seed: the target's public schema already has ${existing.rows[0].n} table(s). ` +
+        `This fixture DROPS the public schema (all objects + data). Re-run with --reset to wipe and reseed.`,
+    );
+    await client.end();
+    process.exit(1);
+  }
+
   const sql = await readFile(SCHEMA_FILE, "utf8");
   console.log("→ Loading fixtures/target_schema.sql (drops & recreates public schema)…");
   const started = Date.now();

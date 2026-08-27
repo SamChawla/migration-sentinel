@@ -490,7 +490,9 @@ async function main() {
     version: 1,
     upSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE bigint;",
     downSql: "ALTER TABLE public.orders ALTER COLUMN amount_cents TYPE integer;",
-    reversibility: "reversible",
+    // A column type change is LOSSY per the classifier (a narrowing down migration
+    // can truncate/round). Seed it 'lossy' to match — 'reversible' would mislead.
+    reversibility: "lossy",
     model: "claude-sonnet-4-20250514",
     createdAt: hoursAgo(0.4),
   }).returning();

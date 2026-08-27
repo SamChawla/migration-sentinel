@@ -84,6 +84,13 @@ async function main() {
   console.log(`apply result: ${result.status}`);
   console.log(result.logs);
   assert(result.status === "applied", `guarded apply expected 'applied', got '${result.status}'`);
+  // A committed target with controlPlaneSynced=false means the request may still
+  // read 'applying' — that is an unsuccessful end-to-end outcome the smoke must
+  // NOT pass over.
+  assert(
+    result.controlPlaneSynced !== false,
+    `apply committed but control-plane did not sync (request may be stuck 'applying')`,
+  );
 
   // Cleanup — connect to the SAME target the apply resolved (not a separate env
   // read), so we drop the column from the database that was actually mutated.
