@@ -60,13 +60,20 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
-    await insertAuditEvent({
-      migrationRequestId: requestId,
-      actor,
-      action: "approval.rejected",
-      detail: `Rejected — "${rec.title}".`,
-      tone: "red",
-    });
+    // The decision is already committed; the audit event is best-effort. A write
+    // failure here must NOT 500 (the rejection took, and a retry would 409 without
+    // recreating the event) — log it and still report the real outcome.
+    try {
+      await insertAuditEvent({
+        migrationRequestId: requestId,
+        actor,
+        action: "approval.rejected",
+        detail: `Rejected — "${rec.title}".`,
+        tone: "red",
+      });
+    } catch (auditErr) {
+      console.error(`[approvals] rejected ${requestId} but audit write failed:`, auditErr);
+    }
     return NextResponse.json({ ok: true, status: "rejected" });
   }
 
@@ -123,6 +130,17 @@ export async function POST(req: Request) {
     const result = await applyMigration(requestId, { typedConfirm: typedConfirm ?? null });
     if (result.status === "failed") {
       return NextResponse.json({ ok: false, status: "failed", error: result.error }, { status: 500 });
+    }
+    // The target committed. But applyMigration treats the control-plane 'applied'
+    // status write as retried-best-effort; if it never stuck, the request may
+    // still read 'applying'. Report that honestly instead of a clean 'applied'.
+    if (result.controlPlaneSynced === false) {
+      return NextResponse.json({
+        ok: true,
+        status: "applied",
+        controlPlaneSynced: false,
+        warning: "Applied to the target, but the control-plane status write did not complete — the request may show 'applying' until reconciled.",
+      });
     }
     return NextResponse.json({ ok: true, status: "applied" });
   } catch (e) {

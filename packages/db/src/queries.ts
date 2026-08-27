@@ -111,7 +111,11 @@ function requestFilterConditions(opts: { q?: string; status?: string }) {
   if (group) conds.push(inArray(migrationRequest.status, group));
   const q = opts.q?.trim();
   if (q) {
-    const like = `%${q}%`;
+    // Escape LIKE wildcards so user text is matched LITERALLY — otherwise a search
+    // for "%" or "_" is interpreted as pattern syntax and matches nearly every
+    // row. Backslash is Postgres's default LIKE escape char.
+    const escaped = q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const like = `%${escaped}%`;
     conds.push(
       or(
         ilike(migrationRequest.title, like),
