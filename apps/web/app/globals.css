@@ -410,7 +410,7 @@ label.lbl {
 .toast-danger { border-color: rgba(220,38,38,.3); color: var(--danger); }
 
 /* ═══ Page head ═══════════════════════════════════════════ */
-.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
 .page-head h1 { margin: 0 0 4px; }
 
 /* ═══ Utility ═════════════════════════════════════════════ */

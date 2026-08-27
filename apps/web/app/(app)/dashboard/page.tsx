@@ -61,9 +61,9 @@ export default async function Dashboard() {
             Every schema change: analyzed, dry-run on a shadow, and gated on you.
           </p>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }} data-tour="search">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", minWidth: 0 }} data-tour="search">
           {/* Native GET form → reuses the server-side search on /requests. */}
-          <form action="/requests" method="get" role="search" style={{ position: "relative", display: "flex", alignItems: "center" }}>
+          <form action="/requests" method="get" role="search" style={{ position: "relative", display: "flex", alignItems: "center", flex: "1 1 180px", minWidth: 0 }}>
             <span aria-hidden style={{ position: "absolute", left: 11, fontSize: 13, color: "var(--faint)", pointerEvents: "none" }}>⌕</span>
             <input
               type="search"
@@ -71,7 +71,7 @@ export default async function Dashboard() {
               placeholder="Search migrations…"
               aria-label="Search migrations"
               style={{
-                width: 230, fontSize: 13, padding: "8px 12px 8px 30px", borderRadius: 9,
+                width: "100%", maxWidth: 230, minWidth: 0, fontSize: 13, padding: "8px 12px 8px 30px", borderRadius: 9,
                 background: "var(--panel-2)", border: "1px solid var(--line-strong)", color: "var(--text)",
               }}
             />
