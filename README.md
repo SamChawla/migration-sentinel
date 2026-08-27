@@ -2,6 +2,17 @@
 
 **An AI agent that plans, dry-runs, and applies PostgreSQL schema migrations — and physically stops for a human before anything irreversible.**
 
+[![CI](https://github.com/SamChawla/migration-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/SamChawla/migration-sentinel/actions/workflows/ci.yml)
+![Coverage](https://img.shields.io/badge/coverage-68%25%20lines%20%C2%B7%2088%25%20branches-yellowgreen)
+![Tests](https://img.shields.io/badge/tests-167%20passing-brightgreen)
+![Qodo](https://img.shields.io/badge/Qodo-13%20review%20rounds%20%C2%B7%200%20open-8A2BE2)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)
+![Node](https://img.shields.io/badge/Node-%E2%89%A522-339933?logo=nodedotjs&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 Built for the **TrueForge Agent Harness Hackathon** (WeMakeDevs × TrueFoundry). The agent runs on TrueForge; every migration travels one pipeline; nothing skips the gate.
 
 ```
@@ -24,7 +35,7 @@ intake → generate up/down → shadow dry-run (blast radius + rollback proof) �
 - [Tech stack](#tech-stack)
 - [Getting started](#getting-started)
 - [Environment variables](#environment-variables)
-- [Tests](#tests)
+- [Tests, CI & coverage](#tests-ci--coverage)
 - [Project structure](#project-structure)
 - [Safety & control](#safety--control)
 - [Qodo Code Review Evidence](#qodo-code-review-evidence)
@@ -189,10 +200,13 @@ npx @truefoundry/trueforge           # TrueForge server (:8790), with a model-pr
 
 Raw-SQL intake runs the whole pipeline **live** — shadow dry-run, rollback proof, pre-flight, gate, guarded apply — with **no** model or TrueForge server required. TrueForge + a model key are only for the *generate-from-intent* step.
 
-Verify the safety core with zero external deps:
+Verify the safety core (the pure classifier/gate/guard tests run with zero external
+deps; the rollback + provisioning tests use the ephemeral shadow above):
 
 ```bash
-pnpm vitest run                      # 89 passing
+pnpm test                            # 167 passing
+pnpm test:coverage                   # + v8 coverage report
+pnpm typecheck                       # packages + web app
 ```
 
 ## Environment variables
@@ -202,6 +216,9 @@ pnpm vitest run                      # 89 passing
 | `DATABASE_URL` | Control-plane Postgres (sentinel-db) |
 | `TARGET_DB_URL` | The database being migrated (read-only until apply) |
 | `SHADOW_ADMIN_URL` | Admin conn that can `CREATE`/`DROP` ephemeral shadow DBs |
+| `SHADOW_DATABASE_URL` | A throwaway shadow DB — used by the live rollback tests / CI |
+| `APPROVER_TOKEN` | The single-approver login token (the Approval Console validates it) |
+| `APPROVER_IDENTITY` | Server-set actor recorded in the audit log (default `approver`) |
 | `TRUEFORGE_BASE_URL` | TrueForge server (default `http://localhost:8790`) |
 | `TRUEFORGE_TOKEN` | *Only* for a hosted/auth-enabled TrueForge (local server needs none) |
 | `ANTHROPIC_API_KEY` | The model-provider key the TrueForge server uses to generate SQL |
@@ -210,13 +227,39 @@ pnpm vitest run                      # 89 passing
 
 > Next reads `apps/web/.env.local`, **not** the repo-root `.env` — mirror the DB URLs there for the running app.
 
-## Tests
+## Tests, CI & coverage
 
 ```bash
-pnpm vitest run
+pnpm test            # 167 passing (Vitest)
+pnpm test:coverage   # v8 coverage over the deterministic safety core
+pnpm typecheck       # tsc --noEmit over packages + the Next.js app
 ```
 
-**89 passing** — blast classifier (32), data pre-flight (12), read-only query guard (16), gate disposition (9), rollback proof on a live shadow (7), `sanitizeDump` (4), Qodo parsing/skip (9). The rollback suite runs against a real ephemeral Postgres. `scripts/smoke_live.ts` exercises the full intake → gate → guarded apply flow end-to-end against the real databases.
+**167 passing** across the deterministic safety core:
+
+| Suite | Tests | What it proves |
+|---|---:|---|
+| `shadow/blast` | 32 | statement classifier + SQL lexer (strings, dollar-quotes, nested comments, E-strings) |
+| `shadow/qodo-fixes` | 49 | regression tests for every review round (each finding gets a test) |
+| `agent/apply` | 19 | autocommit detection + `findExecutorSubversion` (txn/timeout/2PC contract) |
+| `shadow/query` | 16 | read-only guard (advisory locks, `set_config`, backend signals, `dblink`, …) |
+| `shadow/preflight` | 12 | exact data-dependent probes (NOT NULL, UNIQUE, CHECK, FK, PK, EXCLUDE) |
+| `qodo` | 12 | verdict JSON extraction + skip/degradation contract |
+| `core/disposition` | 11 | the four-way gate policy |
+| `shadow/rollback` | 7 | **live** shadow: `up`→`down` schema-fingerprint proof (real Postgres) |
+| `agent/generate` | 5 | resilient `{up,down}` JSON extraction |
+| `shadow/provision` | 4 | `sanitizeDump` (dollar-quote-aware pg_dump post-processing) |
+
+Coverage of the safety core (`@vitest/coverage-v8`): **~68% lines/statements, ~88% branches**.
+The lower line figure is honest — the guarded-**apply execution** and the network/CLI
+clients (TrueForge, `pg`, `pg_dump`, the Qodo CLI) are exercised **live** by
+`scripts/smoke_live.ts` (full intake → gate → guarded apply end-to-end against the
+real databases), not by unit tests.
+
+**CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push/PR:
+it provisions three Postgres 16 services mirroring `docker-compose`, then runs
+`pnpm typecheck` and `pnpm test:coverage` — so the **live rollback + provisioning
+tests actually run in CI**, not self-skip.
 
 ## Project structure
 
@@ -226,11 +269,16 @@ packages/
   core/              shared types · request state machine · independent gate · disposition policy · audit
   db/                Drizzle schema + query layer (the control-plane state)
   shadow/            blast classifier · rollback verifier · data pre-flight · read-only query guard · shadow provisioning + pg_dump
-  agent/             TrueForge client + approval loop · generation · orchestrator · guarded apply · safety pipeline
+  agent/             TrueForge client + approval loop · generation · orchestrator · guarded apply · safety pipeline · Day-1 spike
   qodo/              Qodo review client (@qodo/command CLI)
 fixtures/            demo target schema + the migration corpus
-scripts/             seed.ts · smoke_live.ts · verify_blast.ts
+scripts/             seed.ts · seed-sentinel.ts · smoke_live.ts · verify_blast.ts · load-env.ts
+.github/workflows/   ci.yml — typecheck + tests + coverage against live Postgres services
 ```
+
+Meaningful code lands via a **native stacked-PR** set (`feat/foundations` →
+`feat/core-db` → `feat/safety-core` → `feat/agent-qodo` → `feat/web-console` →
+`feat/scripts`), each reviewed by Qodo before merge — see below.
 
 ## Safety & control
 
@@ -242,15 +290,62 @@ scripts/             seed.ts · smoke_live.ts · verify_blast.ts
 
 ## Qodo Code Review Evidence
 
-Meaningful code lands through **Qodo-reviewed pull requests** — `main` is kept minimal and direct pushes are avoided.
+Every line of Migration Sentinel landed through a **Qodo-reviewed pull request** — `main`
+never took a direct push of meaningful code. The work shipped as a **native stacked-PR**
+set, and each PR was reviewed by the **Qodo GitHub App** (triggered with `/agentic_review`),
+its findings resolved with the [`qodo-pr-resolver`](https://github.com/qodo-ai/qodo-skills)
+workflow, and then **re-reviewed** — for **13 rounds** — until zero findings remained.
 
-- **Representative PR:** [#2 — feat: Migration Sentinel — safety pipeline, TrueForge + Qodo, guarded apply](https://github.com/SamChawla/migration-sentinel/pull/2)
-- **Workflow:** each PR is reviewed by the Qodo GitHub App (triggered with `/agentic_review`). High-severity findings are fixed; findings that are intentional or incorrect are dismissed in the Qodo thread with an explanation. Fixes are pushed to the same PR and re-reviewed.
+**All six PRs are merged into `main`:**
 
-<!-- After the review lands, summarize here in 1–2 lines: what Qodo flagged, what we changed, and what we intentionally dismissed (with the follow-up review link). -->
+| PR | Scope | Status |
+|---|---|---|
+| [#1](https://github.com/SamChawla/migration-sentinel/pull/1) | foundations — workspace, Docker stack, fixtures | ✅ merged |
+| [#2](https://github.com/SamChawla/migration-sentinel/pull/2) | core + db — state machine, gate policy, Drizzle control plane | ✅ merged |
+| [#3](https://github.com/SamChawla/migration-sentinel/pull/3) | safety core — blast classifier, rollback proof, pre-flight | ✅ merged |
+| [#4](https://github.com/SamChawla/migration-sentinel/pull/4) | agent + qodo — TrueForge orchestrator, guarded apply, review | ✅ merged |
+| [#5](https://github.com/SamChawla/migration-sentinel/pull/5) | web — Next.js control plane + Approval Console | ✅ merged |
+| [#6](https://github.com/SamChawla/migration-sentinel/pull/6) | scripts — seeders, live smoke test, blast verifier | ✅ merged |
+
+**The review converged, round over round** (findings resolved per round, all four open PRs):
+
+```
+R1  R2  R3  R4  R5  R6  R7  R8  R9  R10 R11 R12 R13
+43  29  21  24  18  14  14  11  10  14   9  11   6      →  0 open
+```
+
+Every round ended at **0 unanswered findings** (verified by paginating each PR's review
+comments); every fix was answered inline on its Qodo thread and summarised in a
+`## Qodo Fix Summary — Round N` comment on the PR. The suite grew **76 → 167 tests** —
+**each finding got a regression test** (see `shadow/qodo-fixes`).
+
+**What Qodo actually caught** (a representative slice of ~220 findings):
+
+- **SQL-parsing safety** — a read-only-guard bypass and statement-splitter flaws where a
+  keyword hidden in a string / comment / dollar-quote / nested comment could mask a
+  destructive statement; fixed by a real lexer used everywhere a keyword is judged.
+- **Rollback-proof completeness** — the schema fingerprint was extended, gap by gap, to
+  every object class (views, functions, triggers, sequences + ownership, all user schemas,
+  extensions + membership, enums, domains, composite-type attributes, ranges) so a
+  migration can't read "restored" when it isn't.
+- **Guarded-apply contract** — the executor refuses migrations that carry their own
+  transaction control (`COMMIT`, `PREPARE TRANSACTION`, `COMMIT PREPARED`) or disable its
+  timeouts (`SET`/`RESET`/`set_config` of `statement_timeout`); it reports honestly when a
+  lost COMMIT/autocommit response leaves the target state unknown.
+- **Concurrency & state** — atomic, guarded status transitions (approve/reject/apply
+  claims), strand-proofing (a claimed request always reaches a terminal state), and a
+  reset guard that runs its check + wipe in one `SERIALIZABLE` transaction.
+- **Security** — a forgeable audit actor, secrets in `pg_dump` argv / logs, and cookie
+  handling were all hardened.
+
+A recurring theme was **fixes creating the next round's finding** (a `pg_dump` timeout that
+overflowed `setTimeout`; a search that matched `%` too broadly; a wall-clock deadline that
+awaited an unbounded teardown) — which is exactly the value of an adversarial reviewer that
+re-reads its own diff.
 
 ## Roadmap
 
+- [x] CI (GitHub Actions) — typecheck + tests + coverage against live Postgres services
 - [ ] Route the guarded apply through a TrueForge **gated MCP tool** + sandbox (make the harness even more central)
 - [ ] GitHub PR intake — paste a PR link → review its migration file through the same pipeline
 - [ ] Opt-in **sampled-data mode** for *measured* (not estimated) rewrite times
@@ -260,3 +355,7 @@ Meaningful code lands through **Qodo-reviewed pull requests** — `main` is kept
 ## Built with
 
 TrueForge (agent harness), Qodo (code review), Drizzle + PostgreSQL, Next.js, and Claude Code. The safety core is deterministic and unit-tested; the model is used where judgment helps (authoring) and kept away from where it must not (the gate).
+
+## License
+
+[MIT](LICENSE) © 2026 Migration Sentinel.

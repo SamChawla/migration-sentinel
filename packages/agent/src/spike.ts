@@ -272,7 +272,9 @@ async function checkPersistence(client: TrueForge) {
     let seen = 0;
     for await (const { data: event, id } of stream.withMetadata()) {
       if (id) lastSeq = id;
-      if (event?.type === "turn.created") turnId = event?.turnId ?? event?.turn?.id;
+      // Defensive access — the SDK's TurnCreatedEvent type doesn't declare `turn`,
+      // but real servers vary; treat the event as untyped for this probe.
+      if (event?.type === "turn.created") turnId = event?.turnId ?? (event as any)?.turn?.id;
       if (++seen >= 3) break; // bail early to simulate a disconnect
     }
     writeFileSync(STATE_FILE, JSON.stringify({ sessionId: session.id, turnId, lastSeq }, null, 2));
