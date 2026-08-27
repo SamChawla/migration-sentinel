@@ -78,6 +78,14 @@ describe("findExecutorSubversion — guarded-apply contract (R6 #1/#2)", () => {
     expect(findExecutorSubversion("RESET statement_timeout")).toMatch(/RESET of a safety GUC/);
   });
 
+  it("flags set_config() of a safety GUC — the function form of SET (R13 #1)", () => {
+    expect(findExecutorSubversion("SELECT set_config('statement_timeout', '0', false)")).toMatch(/set_config of a safety GUC/);
+    expect(findExecutorSubversion("SELECT set_config('lock_timeout','0',true)")).toMatch(/set_config of a safety GUC/);
+    // set_config of an UNRELATED GUC, or the name only in a string, must not trip
+    expect(findExecutorSubversion("SELECT set_config('search_path', 'public', false)")).toBeNull();
+    expect(findExecutorSubversion("INSERT INTO log (msg) VALUES ('set_config(''statement_timeout'')')")).toBeNull();
+  });
+
   it("does NOT flag a normal DDL migration", () => {
     expect(findExecutorSubversion("ALTER TABLE users ADD COLUMN age int; CREATE INDEX i ON users (age);")).toBeNull();
   });

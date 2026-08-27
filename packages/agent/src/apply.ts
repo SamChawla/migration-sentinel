@@ -91,6 +91,15 @@ export function findExecutorSubversion(upSql: string): string | null {
       return `timeout override ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
     if (/^RESET\s+(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout|ALL)\b/i.test(c))
       return `RESET of a safety GUC ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
+    // set_config('statement_timeout', …) is the function form of SET and equally
+    // disables the safeguard. The GUC name is a STRING literal (blanked by
+    // codeOnly), so match it on the RAW statement — but only when codeOnly shows a
+    // real set_config( call (not one buried in a comment/string literal).
+    if (
+      /\bset_config\s*\(/i.test(c) &&
+      /\bset_config\s*\(\s*'(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout)'/i.test(stmt)
+    )
+      return `set_config of a safety GUC ("${stmt.slice(0, 40)}") — would disable the guarded-apply safeguards`;
   }
   return null;
 }
@@ -202,6 +211,11 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   // failure after this point may have already changed the target, and we must
   // NOT record a clean rollback for it (committedCount alone would read 0).
   let autocommitAttempted = false;
+  // TRUE once the transactional COMMIT is in flight. If the server commits but the
+  // response is lost, client.query("COMMIT") rejects before `committed` is set —
+  // the target may already hold the migration, so we must NOT claim a clean
+  // rollback for it either.
+  let commitInFlight = false;
   try {
     runId = await insertApplyRun({
       requestId,
@@ -235,12 +249,18 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
         try {
           const res = await client.query(artifact.upSql);
           const rows = Array.isArray(res) ? res.reduce((n, r) => n + (r.rowCount ?? 0), 0) : res.rowCount ?? 0;
+          commitInFlight = true; // set BEFORE the await — a lost COMMIT response may still have committed
           await client.query("COMMIT");
           committed = true;
+          commitInFlight = false;
           log(`COMMIT — migration applied${rows ? ` (${rows} rows affected)` : ""}`);
         } catch (e) {
           await client.query("ROLLBACK").catch(() => {});
-          log(`ERROR — ${(e as Error).message}. ROLLBACK issued; target unchanged.`);
+          log(
+            commitInFlight
+              ? `ERROR — ${(e as Error).message}. COMMIT was IN FLIGHT — the target state is UNKNOWN and may be committed; manual reconciliation required.`
+              : `ERROR — ${(e as Error).message}. ROLLBACK issued; target unchanged.`,
+          );
           throw e;
         }
       }
@@ -278,12 +298,15 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     );
     return { status: "applied", logs: logs.join("\n"), controlPlaneSynced };
   } catch (e) {
-    // Any failure in the autocommit path is potentially-partial: an in-flight
-    // statement may have committed even though we never saw its response, so
-    // committedCount can under-count. Treat autocommitAttempted as the signal.
-    const partial = nonTransactional && autocommitAttempted;
+    // "Potentially committed" = we can't prove the target is unchanged: either an
+    // in-flight autocommit statement, OR a transactional COMMIT whose response was
+    // lost (commitInFlight). In both cases we must NOT record a clean rollback and
+    // MUST flag reconciliation — committedCount / the ROLLBACK alone would lie.
+    const partial = (nonTransactional && autocommitAttempted) || commitInFlight;
     const partialNote = partial
-      ? ` (autocommit — at least ${committedCount} statement(s) committed; the in-flight statement's result is unknown, so the target may have changed — manual reconciliation required)`
+      ? commitInFlight
+        ? ` (the COMMIT was in flight when the connection dropped — the target may hold the migration; manual reconciliation required)`
+        : ` (autocommit — at least ${committedCount} statement(s) committed; the in-flight statement's result is unknown, so the target may have changed — manual reconciliation required)`
       : "";
     log(`FAILED — ${(e as Error).message}${partialNote}`);
     // Best-effort each write so a single control-plane failure can't strand the

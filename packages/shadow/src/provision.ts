@@ -37,7 +37,14 @@ function withDbName(adminUrl: string, dbName: string): string {
 
 export async function provisionShadow(opts: ProvisionOptions): Promise<ShadowHandle> {
   const ref = shadowName();
-  const admin = new Client({ connectionString: opts.adminUrl });
+  // Bound EVERY connection here — a stalled SHADOW_ADMIN_URL (DNS/TCP/TLS) would
+  // otherwise hang provisioning before the dry-run deadline (which only starts
+  // after this returns) can help, stranding a claimed request in dry_running.
+  const CONNECT_MS = (() => {
+    const n = Number(process.env.SHADOW_CONNECT_TIMEOUT_MS);
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 2_147_483_647) : 10_000;
+  })();
+  const admin = new Client({ connectionString: opts.adminUrl, connectionTimeoutMillis: CONNECT_MS });
   await admin.connect();
   try {
     await admin.query(`CREATE DATABASE ${ref}`);
@@ -46,7 +53,7 @@ export async function provisionShadow(opts: ProvisionOptions): Promise<ShadowHan
   }
 
   const dropDatabase = async () => {
-    const a = new Client({ connectionString: opts.adminUrl });
+    const a = new Client({ connectionString: opts.adminUrl, connectionTimeoutMillis: CONNECT_MS });
     await a.connect();
     try {
       // terminate any stragglers, then drop
@@ -61,9 +68,15 @@ export async function provisionShadow(opts: ProvisionOptions): Promise<ShadowHan
   };
 
   const url = withDbName(opts.adminUrl, ref);
-  const shadow = new Client({ connectionString: url });
+  const shadow = new Client({ connectionString: url, connectionTimeoutMillis: CONNECT_MS });
   try {
     await shadow.connect();
+    // Bound the schema replay too — a pathological dumped statement can't hang here.
+    const stmtMs = (() => {
+      const n = Number(process.env.SHADOW_STATEMENT_TIMEOUT_MS);
+      return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 2_147_483_647) : 30_000;
+    })();
+    await shadow.query(`SET statement_timeout = ${stmtMs}`);
     await shadow.query(opts.schemaSql);
   } catch (e) {
     // Seeding failed — the CREATE DATABASE already succeeded, so drop it now or
