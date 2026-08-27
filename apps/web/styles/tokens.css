@@ -1,0 +1,58 @@
+/* Migration Sentinel "Flight Deck" design tokens — Light theme, violet accent. */
+:root {
+  /* space & surfaces */
+  --space-0: #f4f6f9;
+  --space-1: #eaeff4;
+  --panel: rgba(255, 255, 255, 0.80);
+  --panel-2: rgba(255, 255, 255, 0.95);
+  --rail: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 250, 252, 0.80));
+
+  /* lines & text */
+  --line: rgba(15, 30, 50, 0.10);
+  --line-strong: rgba(15, 30, 50, 0.18);
+  --text: #1a2332;
+  --text-dim: #4a5568;
+  --muted: #8896a6;
+  --faint: #b0bac5;
+
+  /* brand — violet */
+  --cyan: #7c3aed;
+  --cyan-deep: #6d28d9;
+  --magenta: #db2777;
+
+  /* semantic safety */
+  --safe: #059669;
+  --warn: #d97706;
+  --danger: #dc2626;
+  --danger-strong: #b91c1c;
+  --hold: #ea580c;
+
+  /* material gradients (controls & icons only) */
+  --mat-metal: linear-gradient(180deg, #e2e8f0, #cbd5e1, #94a3b8);
+  --mat-bezel: linear-gradient(180deg, #94a3b8, #64748b);
+  --mat-cyan: linear-gradient(180deg, #c4b5fd, #7c3aed);
+  --mat-lamp: radial-gradient(circle at 50% 35%, #fecaca, #ef4444 40%, #991b1b);
+  --mat-apply: linear-gradient(180deg, #fcd34d 0%, #f59e0b 45%, #d97706 100%);
+
+  /* glow presets (subtle on light) */
+  --glow-cyan: 0 0 12px rgba(124, 58, 237, 0.25);
+  --glow-danger: 0 0 16px rgba(220, 38, 38, 0.20);
+  --glow-soft: 0 2px 12px rgba(124, 58, 237, 0.08);
+  --inset-top: inset 0 1px 0 rgba(255, 255, 255, 0.60);
+
+  /* shadows (light theme uses drop shadows instead of glows) */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.07), 0 1px 3px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 6px rgba(0, 0, 0, 0.04);
+
+  /* radius */
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 14px;
+
+  /* type — wired to next/font variables in layout.tsx */
+  --font-display: var(--font-chakra, 'Chakra Petch'), system-ui, sans-serif;
+  --font-mono: var(--font-ibm, 'IBM Plex Mono'), ui-monospace, Menlo, monospace;
+
+  color-scheme: light;
+}

@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, desc, sql, and, inArray } from "drizzle-orm";
+import { eq, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -92,87 +92,127 @@ function toIso(d: Date | null | undefined): string {
  * List all migration requests, hydrated with the latest artifact, blast
  * report, approval, and shadow run. Ordered by created_at DESC.
  */
-export async function listRequests(opts: { limit?: number; offset?: number } = {}): Promise<RequestRecord[]> {
+/** Server-side status groups for the requests list — MUST match the UI chips so
+ *  a filter reflects EVERY matching request, not only those on the current page. */
+const REQUEST_STATUS_GROUPS: Record<string, RequestStatus[]> = {
+  awaiting_approval: ["awaiting_approval"],
+  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "applying"],
+  applied: ["applied"],
+  blocked: ["blocked"],
+  rejected: ["rejected"],
+  failed: ["failed", "rolled_back"],
+};
+
+/** Build the shared WHERE for listRequests + countRequests so the filtered list
+ *  and its total count always agree. Applied in SQL, across all pages. */
+function requestFilterConditions(opts: { q?: string; status?: string }) {
+  const conds = [];
+  const group = opts.status && opts.status !== "all" ? REQUEST_STATUS_GROUPS[opts.status] : undefined;
+  if (group) conds.push(inArray(migrationRequest.status, group));
+  const q = opts.q?.trim();
+  if (q) {
+    // Escape LIKE wildcards so user text is matched LITERALLY — otherwise a search
+    // for "%" or "_" is interpreted as pattern syntax and matches nearly every
+    // row. Backslash is Postgres's default LIKE escape char.
+    const escaped = q.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const like = `%${escaped}%`;
+    conds.push(
+      or(
+        ilike(migrationRequest.title, like),
+        ilike(migrationRequest.requestedBy, like),
+        ilike(targetDatabase.connectionAlias, like),
+        ilike(targetDatabase.name, like),
+      ),
+    );
+  }
+  return conds;
+}
+
+export async function listRequests(
+  opts: { limit?: number; offset?: number; q?: string; status?: string } = {},
+): Promise<RequestRecord[]> {
   // Bounded by default so the list path can't grow unbounded with history.
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
+  const conds = requestFilterConditions(opts);
   const rows = await db
     .select()
     .from(migrationRequest)
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .leftJoin(approval, eq(approval.migrationRequestId, migrationRequest.id))
-    .orderBy(desc(migrationRequest.createdAt))
+    .where(conds.length ? and(...conds) : undefined)
+    // (created_at, id) is a TOTAL order — created_at alone is non-unique, so
+    // offset paging over ties would duplicate/skip rows between page requests.
+    .orderBy(desc(migrationRequest.createdAt), desc(migrationRequest.id))
     .limit(limit)
     .offset(offset);
 
-  const records: RequestRecord[] = [];
-
-  for (const row of rows) {
+  // Hydrate rows CONCURRENTLY (Promise.all over rows), and within each row run
+  // the independent lookups in parallel — otherwise 50 rows × ~5 sequential
+  // queries was ~250 serialized round trips. Depth is now O(3) regardless of page
+  // size: {artifact, shadow} ‖ then {qodo, blast, preflight} ‖ then findings.
+  const records: RequestRecord[] = await Promise.all(
+    rows.map(async (row): Promise<RequestRecord> => {
     const req = row.migration_request;
     const target = row.target_database;
     const appr = row.approval;
 
-    const artifact = await db
-      .select()
-      .from(generatedArtifact)
-      .where(eq(generatedArtifact.migrationRequestId, req.id))
-      .orderBy(desc(generatedArtifact.version))
-      .limit(1)
-      .then((r) => r[0] ?? null);
-
-    let qodoRow: typeof qodoReview.$inferSelect | null = null;
-    if (artifact) {
-      qodoRow = await db
+    const [artifact, shadow] = await Promise.all([
+      db
         .select()
-        .from(qodoReview)
-        .where(eq(qodoReview.generatedArtifactId, artifact.id))
-        .orderBy(desc(qodoReview.createdAt))
+        .from(generatedArtifact)
+        .where(eq(generatedArtifact.migrationRequestId, req.id))
+        .orderBy(desc(generatedArtifact.version))
         .limit(1)
-        .then((r) => r[0] ?? null);
-    }
+        .then((r) => r[0] ?? null),
+      db
+        .select()
+        .from(shadowRun)
+        .where(eq(shadowRun.migrationRequestId, req.id))
+        .orderBy(desc(shadowRun.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null),
+    ]);
 
-    const shadow = await db
-      .select()
-      .from(shadowRun)
-      .where(eq(shadowRun.migrationRequestId, req.id))
-      .orderBy(desc(shadowRun.createdAt))
-      .limit(1)
-      .then((r) => r[0] ?? null);
+    const [qodoRow, blast, preflights] = await Promise.all([
+      artifact
+        ? db
+            .select()
+            .from(qodoReview)
+            .where(eq(qodoReview.generatedArtifactId, artifact.id))
+            .orderBy(desc(qodoReview.createdAt))
+            .limit(1)
+            .then((r) => r[0] ?? null)
+        : Promise.resolve(null),
+      shadow
+        ? db
+            .select()
+            .from(blastReport)
+            .where(eq(blastReport.shadowRunId, shadow.id))
+            .limit(1)
+            .then((r) => r[0] ?? null)
+        : Promise.resolve(null),
+      shadow
+        ? db.select().from(preflightResult).where(eq(preflightResult.shadowRunId, shadow.id))
+        : Promise.resolve([] as (typeof preflightResult.$inferSelect)[]),
+    ]);
 
-    let blast: typeof blastReport.$inferSelect | null = null;
     let findings: FindingRow[] = [];
-    if (shadow) {
-      blast = await db
+    if (blast) {
+      const rawFindings = await db
         .select()
-        .from(blastReport)
-        .where(eq(blastReport.shadowRunId, shadow.id))
-        .limit(1)
-        .then((r) => r[0] ?? null);
-
-      if (blast) {
-        const rawFindings = await db
-          .select()
-          .from(blastFinding)
-          .where(eq(blastFinding.blastReportId, blast.id))
-          .orderBy(blastFinding.statementIndex);
-
-        findings = rawFindings.map((f) => ({
-          statement: f.statementSql,
-          severity: f.severity as Severity,
-          lockType: f.lockType,
-          note: f.note,
-        }));
-      }
+        .from(blastFinding)
+        .where(eq(blastFinding.blastReportId, blast.id))
+        .orderBy(blastFinding.statementIndex);
+      findings = rawFindings.map((f) => ({
+        statement: f.statementSql,
+        severity: f.severity as Severity,
+        lockType: f.lockType,
+        note: f.note,
+      }));
     }
 
-    const preflights = shadow
-      ? await db
-          .select()
-          .from(preflightResult)
-          .where(eq(preflightResult.shadowRunId, shadow.id))
-      : [];
-
-    records.push({
+    return {
       id: req.id,
       title: req.title,
       targetDb: target?.connectionAlias ?? target?.name ?? "unknown",
@@ -204,8 +244,9 @@ export async function listRequests(opts: { limit?: number; offset?: number } = {
         requiresTypedConfirm: appr?.requiresTypedConfirm ?? false,
         expectedConfirm: appr?.expectedConfirmValue ?? null,
       },
-    });
-  }
+    };
+    }),
+  );
 
   return records;
 }
@@ -330,6 +371,9 @@ export interface CreateRequestInput {
   targetDb: string;
   upSql: string;
   downSql: string;
+  /** Natural-language intent — when set (and upSql is empty) the request is an
+   *  nl_intent with NO artifact, so the agent generates the {up,down} pair. */
+  intent?: string;
   requestedBy?: string;
 }
 
@@ -358,19 +402,22 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
       targetId = newTarget.id;
     }
 
+    const isIntent = !input.upSql.trim() && Boolean(input.intent?.trim());
     const [req] = await tx
       .insert(migrationRequest)
       .values({
         targetDatabaseId: targetId,
-        intakeKind: "raw_sql",
-        intakePayload: { sql: input.upSql },
+        intakeKind: isIntent ? "nl_intent" : "raw_sql",
+        intakePayload: isIntent ? { intent: input.intent } : { sql: input.upSql },
         title: input.title,
         status: "received",
         requestedBy: input.requestedBy ?? "unknown",
       })
       .returning();
 
-    if (input.upSql) {
+    // Raw SQL → persist it as the v1 artifact immediately. An nl_intent gets NO
+    // artifact here, so runAgentPipeline's generation stage produces {up,down}.
+    if (!isIntent && input.upSql) {
       await tx.insert(generatedArtifact).values({
         migrationRequestId: req.id,
         version: 1,
@@ -460,6 +507,7 @@ export async function recordApproval(input: {
  * one caller must NEVER erase a valid approval that another caller has already
  * recorded and CLAIMED for apply — resetting an 'approved'/'applying' request
  * would leave the executor committing while the DB shows the approval as pending.
+ * A terminally 'blocked' request also stays blocked (the guard excludes it).
  * Returns whether it actually reset anything.
  */
 export async function resetApproval(requestId: string): Promise<boolean> {
@@ -804,13 +852,8 @@ export async function finishApplyRun(
 
 // ── Audit ────────────────────────────────────────────────────────────────
 
-export async function listAuditEvents(): Promise<AuditEventRow[]> {
-  const rows = await db
-    .select()
-    .from(auditEvent)
-    .orderBy(desc(auditEvent.createdAt));
-
-  return rows.map((e) => ({
+function toAuditRow(e: typeof auditEvent.$inferSelect): AuditEventRow {
+  return {
     id: e.id,
     at: toIso(e.createdAt),
     actor: e.actor,
@@ -818,7 +861,88 @@ export async function listAuditEvents(): Promise<AuditEventRow[]> {
     requestId: e.migrationRequestId,
     detail: e.detail ?? "",
     tone: (e.tone as "green" | "red" | "info" | "neutral") ?? "neutral",
-  }));
+  };
+}
+
+export async function listAuditEvents(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<AuditEventRow[]> {
+  // Bounded + PAGINATED — the audit log grows without limit. A single-page fetch
+  // presented as the whole append-only history silently drops older events once
+  // it exceeds the cap; the Audit Log page pages through it with countAuditEvents.
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    // (created_at, id) is a TOTAL, deterministic order — created_at alone is
+    // non-unique, so ties would sort arbitrarily between page requests and make
+    // the same event appear twice (or vanish) as the operator pages. The id
+    // tiebreaker pins the order so paging is stable.
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
+    .limit(limit)
+    .offset(offset);
+  return rows.map(toAuditRow);
+}
+
+/** Total number of audit events (for accurate pagination totals). */
+export async function countAuditEvents(): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(auditEvent);
+  return row?.count ?? 0;
+}
+
+/** Audit events for ONE request, filtered in SQL and bounded — used by the live
+ *  SSE poller so a per-second tick never scans the whole audit table. */
+export async function listAuditEventsForRequest(requestId: string, limit = 50): Promise<AuditEventRow[]> {
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    .where(eq(auditEvent.migrationRequestId, requestId))
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
+    .limit(Math.min(Math.max(limit, 1), 200));
+  return rows.map(toAuditRow);
+}
+
+/** Audit events for ONE request STRICTLY AFTER a (created_at, id) cursor, in
+ *  ASCENDING order. The SSE poller pages forward through this so a burst of more
+ *  than one page between polls is fully drained rather than losing the older
+ *  events that fall outside a newest-N window. */
+export async function listAuditEventsForRequestSince(
+  requestId: string,
+  since: { at: string; id: string } | null,
+  limit = 100,
+): Promise<AuditEventRow[]> {
+  // The cursor `at` came back through JS Date.toISOString() (MILLISECOND
+  // precision), but created_at is microsecond-precise. Comparing raw would make an
+  // event whose sub-ms > 0 satisfy `created_at > cursor.at` on the very next poll —
+  // re-sending it, and a full page sharing one millisecond would stall the drain.
+  // So compare (and order) on the MILLISECOND-TRUNCATED timestamp, with id as the
+  // deterministic tiebreaker within a millisecond.
+  const conds = [eq(auditEvent.migrationRequestId, requestId)];
+  if (since) {
+    conds.push(
+      sql`(date_trunc('milliseconds', ${auditEvent.createdAt}), ${auditEvent.id}) > (${since.at}::timestamptz, ${since.id}::uuid)`,
+    );
+  }
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    .where(and(...conds))
+    .orderBy(sql`date_trunc('milliseconds', ${auditEvent.createdAt})`, auditEvent.id) // ascending — forward cursor
+    .limit(Math.min(Math.max(limit, 1), 500));
+  return rows.map(toAuditRow);
+}
+
+/** Total number of migration requests MATCHING the same filter as listRequests,
+ *  so the displayed total and the paginated rows always agree. */
+export async function countRequests(opts: { q?: string; status?: string } = {}): Promise<number> {
+  const conds = requestFilterConditions(opts);
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(conds.length ? and(...conds) : undefined);
+  return row?.count ?? 0;
 }
 
 export async function insertAuditEvent(input: {
