@@ -19,6 +19,7 @@ import {
   blastFinding,
   preflightResult,
   approval,
+  applyRun,
   auditEvent,
 } from "../packages/db/src/schema.js";
 import { loadDotenv } from "./load-env.js";
@@ -274,6 +275,20 @@ async function main() {
     createdAt: hoursAgo(26),
   });
 
+  // An APPLIED request has an apply_run — the execution record the guarded
+  // executor writes (status, timeouts, logs, applied_at). Seeding 'applied'
+  // without it misrepresents a completed apply.
+  await tx.insert(applyRun).values({
+    migrationRequestId: req3.id,
+    status: "succeeded",
+    lockTimeoutMs: 3000,
+    statementTimeoutMs: 30000,
+    rollbackAvailable: true,
+    appliedAt: hoursAgo(25.5),
+    logs: "SET lock_timeout=3000ms statement_timeout=30000ms | APPLIED (autocommit) — 1/1 statement(s) committed individually (CREATE INDEX CONCURRENTLY).",
+    createdAt: hoursAgo(25.5),
+  });
+
   // ── Migration 4: SET NOT NULL — APPLIED ───────────────────────────────
   console.log("→ Seeding migration: Backfill + SET NOT NULL…");
   const [req4] = await tx.insert(migrationRequest).values({
@@ -360,6 +375,19 @@ async function main() {
     approver: "sam.chawla26@gmail.com",
     decidedAt: hoursAgo(48),
     createdAt: hoursAgo(49),
+  });
+
+  // Execution record for the applied backfill (data-mutating → rollback not
+  // available, matching the artifact's lossy reversibility).
+  await tx.insert(applyRun).values({
+    migrationRequestId: req4.id,
+    status: "succeeded",
+    lockTimeoutMs: 3000,
+    statementTimeoutMs: 30000,
+    rollbackAvailable: false,
+    appliedAt: hoursAgo(48),
+    logs: "SET lock_timeout=3000ms statement_timeout=30000ms | BEGIN | COMMIT — migration applied (33,121 rows affected).",
+    createdAt: hoursAgo(48),
   });
 
   // ── Migration 5: Unbounded UPDATE — REJECTED ──────────────────────────
