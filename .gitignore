@@ -11,7 +11,9 @@ drizzle/.snapshot/
 *.tsbuildinfo
 .spike-state.json
 .env.*.local
-# Internal planning/design docs — kept local, not published to the repo
-docs/
+# Internal planning/design docs — kept local, not published to the repo.
+# Anchored to the repo root so it does NOT also ignore app routes like
+# apps/web/app/(marketing)/docs/ (which is real, shipped product code).
+/docs/
 # Local Claude Code config (rules/skills) — not part of the product
 .claude/

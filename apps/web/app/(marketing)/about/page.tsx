@@ -49,10 +49,16 @@ export default function About() {
       </section>
 
       <div className="mk-stats-band">
-        <div className="mk-stats" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-          <div className="mk-stat"><div className="v">7</div><div className="l">pipeline stages</div></div>
-          <div className="mk-stat"><div className="v">56/56</div><div className="l">safety tests</div></div>
-          <div className="mk-stat"><div className="v">5</div><div className="l">packages in the monorepo</div></div>
+        <div style={{ maxWidth: 900, margin: "0 auto", textAlign: "center", padding: "0 1rem" }}>
+          <span className="mono" style={{ fontSize: 12, letterSpacing: ".12em", color: "var(--cyan)" }}>⚡ POWERED BY TRUEFORGE</span>
+          <h2 style={{ margin: "12px 0 10px" }}>The agent runs on TrueForge</h2>
+          <p style={{ color: "var(--muted)", fontSize: ".97rem", lineHeight: 1.75, margin: 0 }}>
+            Migration Sentinel is built on the <b style={{ color: "var(--text)" }}>TrueForge</b> agent harness —
+            sessions, streaming turns, and a first-class <b style={{ color: "var(--text)" }}>tool-approval</b> loop.
+            That loop <i>is</i> our human gate: the <span className="mono" style={{ color: "var(--cyan)" }}>apply_migration</span> tool
+            is registered as approval-required, so the agent's turn physically pauses until an operator decides.
+            Blast · rollback · Qodo · pre-flight run as parallel sub-agents in the sandbox.
+          </p>
         </div>
       </div>
 
