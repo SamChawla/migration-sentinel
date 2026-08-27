@@ -82,6 +82,7 @@ h3 { font-size: 15px; }
   background: var(--panel-2); border-bottom: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
   position: sticky; top: 0; z-index: 40;
+  flex-wrap: wrap; /* never overflow the viewport on narrow screens */
 }
 .hud-wordmark {
   font-family: var(--font-display); font-weight: 700; font-size: 14px; color: var(--text);
@@ -672,6 +673,9 @@ label.lbl {
   .rail-item { width: 52px; height: 48px; font-size: 18px; }
   .rail-label { font-size: 8px; }
   .stage { padding: 18px 16px; }
+  /* Hide lower-priority HUD items on phones (Home is in the nav, the name is in
+     the account menu) so the header never overflows. */
+  .hud-home, .hud-user { display: none; }
 }
 @media (max-width: 640px) {
   .mk-grid, .pricing-grid, .doc-arch-grid { grid-template-columns: 1fr; }
