@@ -64,9 +64,20 @@ export async function runSafetyPipeline(input: SafetyPipelineInput): Promise<Saf
   // 3. shadow dry-run + rollback proof
   const shadow = await provisionShadow({ adminUrl: input.adminUrl, schemaSql: input.schemaSql });
   let rollback: RollbackResult;
-  const client = new Client({ connectionString: shadow.url });
+  const client = new Client({ connectionString: shadow.url, connectionTimeoutMillis: 10_000 });
   try {
     await client.connect();
+    // Bound the DRY-RUN itself — the submitted up/down runs on the shadow here.
+    // A migration with a long statement (e.g. SELECT pg_sleep(...)) or an
+    // indefinite lock wait would otherwise leave the request stuck in dry_running
+    // and block shadow teardown. Env-overridable via SHADOW_STATEMENT_TIMEOUT_MS
+    // / SHADOW_LOCK_TIMEOUT_MS.
+    const posInt = (v: unknown, def: number) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+    };
+    await client.query(`SET statement_timeout = ${posInt(process.env.SHADOW_STATEMENT_TIMEOUT_MS, 30_000)}`);
+    await client.query(`SET lock_timeout = ${posInt(process.env.SHADOW_LOCK_TIMEOUT_MS, 5_000)}`);
     rollback = await verifyRollback(client, input.up, input.down);
   } finally {
     // Guard client.end() so a shutdown rejection can't skip destroy() (leaking

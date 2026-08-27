@@ -42,10 +42,22 @@ import {
  * outcome.
  */
 export function isNonTransactional(upSql: string): boolean {
-  const code = splitStatements(upSql).map(codeOnly).join("\n");
-  return /\b(CONCURRENTLY|VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(
-    code,
-  );
+  // Checked PER STATEMENT (comments stripped, literals blanked) so `[\s\S]*` can't
+  // span statements. CONCURRENTLY is matched ONLY in the contexts where it is a
+  // keyword — CREATE/DROP INDEX CONCURRENTLY, REINDEX ... CONCURRENTLY, REFRESH
+  // MATERIALIZED VIEW ... CONCURRENTLY, DETACH PARTITION ... CONCURRENTLY — not as
+  // a bare word, so a column literally named "concurrently" doesn't force the
+  // (non-atomic) autocommit path.
+  return splitStatements(upSql).some((stmt) => {
+    const c = codeOnly(stmt);
+    return (
+      /\b(VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(c) ||
+      /\bINDEX\s+CONCURRENTLY\b/i.test(c) ||
+      /\bREINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
+      /\bREFRESH\s+MATERIALIZED\s+VIEW\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
+      /\bDETACH\s+PARTITION\b[\s\S]*\bCONCURRENTLY\b/i.test(c)
+    );
+  });
 }
 
 /**
@@ -169,6 +181,11 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   let runId: string | null = null;
   let committed = false;
   let committedCount = 0;
+  // TRUE once we've sent an autocommit statement to the server. Its COMMIT can
+  // happen even if the connection drops before the response arrives — so a
+  // failure after this point may have already changed the target, and we must
+  // NOT record a clean rollback for it (committedCount alone would read 0).
+  let autocommitAttempted = false;
   try {
     runId = await insertApplyRun({
       requestId,
@@ -190,6 +207,7 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
       if (nonTransactional) {
         const stmts = splitStatements(artifact.upSql);
         for (const stmt of stmts) {
+          autocommitAttempted = true; // set BEFORE the await — an in-flight commit counts
           await client.query(stmt);
           committedCount++;
         }
@@ -229,8 +247,14 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     );
     return { status: "applied", logs: logs.join("\n") };
   } catch (e) {
-    const partial = nonTransactional && committedCount > 0;
-    log(`FAILED — ${(e as Error).message}${partial ? ` (autocommit — ${committedCount} statement(s) already committed; manual reconciliation required)` : ""}`);
+    // Any failure in the autocommit path is potentially-partial: an in-flight
+    // statement may have committed even though we never saw its response, so
+    // committedCount can under-count. Treat autocommitAttempted as the signal.
+    const partial = nonTransactional && autocommitAttempted;
+    const partialNote = partial
+      ? ` (autocommit — at least ${committedCount} statement(s) committed; the in-flight statement's result is unknown, so the target may have changed — manual reconciliation required)`
+      : "";
+    log(`FAILED — ${(e as Error).message}${partialNote}`);
     // Best-effort each write so a single control-plane failure can't strand the
     // request in 'applying'. rolledBackAt is null for a partial autocommit.
     if (runId)
@@ -247,7 +271,7 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
         migrationRequestId: requestId,
         actor: "sentinel.apply",
         action: "apply.failed",
-        detail: `Apply failed — ${(e as Error).message}${partial ? ` (autocommit left ${committedCount} statement(s) committed)` : ""}`,
+        detail: `Apply failed — ${(e as Error).message}${partial ? ` (autocommit — target may have partially changed; ≥${committedCount} committed + an in-flight statement of unknown result; manual reconciliation required)` : ""}`,
         tone: "red",
       }),
     );

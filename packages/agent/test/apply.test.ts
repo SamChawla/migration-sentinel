@@ -26,6 +26,16 @@ describe("isNonTransactional — autocommit detection (R5 #4)", () => {
     expect(isNonTransactional(sql)).toBe(false);
   });
 
+  it("does NOT treat CONCURRENTLY as a keyword when it's a column identifier (R10 #5)", () => {
+    expect(isNonTransactional("ALTER TABLE t ADD COLUMN concurrently int")).toBe(false);
+    expect(isNonTransactional("UPDATE t SET concurrently = 1 WHERE id = 2")).toBe(false);
+  });
+
+  it("detects REINDEX / REFRESH MATVIEW CONCURRENTLY (R10 #5)", () => {
+    expect(isNonTransactional("REINDEX TABLE CONCURRENTLY t")).toBe(true);
+    expect(isNonTransactional("REFRESH MATERIALIZED VIEW CONCURRENTLY mv")).toBe(true);
+  });
+
   it("treats ALTER TYPE ... ADD VALUE as transactional in PG12+ (R6 #3)", () => {
     // No longer forced to autocommit — running it in the executor's txn lets a
     // later failure roll back atomically instead of leaving the enum value.

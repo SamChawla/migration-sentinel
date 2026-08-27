@@ -165,7 +165,9 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
     });
 
     const schemaSql = await dumpTargetSchema(targetUrl);
-    const targetReadOnly = new Client({ connectionString: targetUrl });
+    // Bound the connect — a stalled DNS/TCP/TLS handshake would otherwise strand
+    // the claimed pipeline in dry_running before the finally/failure handler runs.
+    const targetReadOnly = new Client({ connectionString: targetUrl, connectionTimeoutMillis: 10_000 });
     await targetReadOnly.connect();
     let report: SafetyReport;
     try {
