@@ -184,6 +184,14 @@ export async function dumpTargetSchema(targetUrl: string): Promise<string> {
   if (userinfo.includes(":")) childEnv.PGPASSWORD = decodeURIComponent(password);
 
   const args = ["--schema-only", "--no-owner", "--no-privileges", "--no-comments", "--dbname", sanitizedUrl];
+  // Bound the child process — an unreachable target or a dump waiting on the
+  // database would otherwise hang pg_dump forever, stranding a claimed pipeline
+  // in generating/dry_running. On timeout Node kills the child and execFileAsync
+  // rejects, so the caller's failure handler runs. Override with $PG_DUMP_TIMEOUT_MS.
+  const dumpTimeoutMs = (() => {
+    const n = Number(process.env.PG_DUMP_TIMEOUT_MS);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60_000;
+  })();
   let lastErr: unknown;
   for (const bin of pgDumpCandidates()) {
     try {
@@ -191,6 +199,8 @@ export async function dumpTargetSchema(targetUrl: string): Promise<string> {
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
         env: childEnv,
+        timeout: dumpTimeoutMs,
+        killSignal: "SIGKILL",
       });
       if (stdout && stdout.trim().length > 0) return sanitizeDump(stdout);
     } catch (e) {
