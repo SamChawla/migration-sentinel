@@ -334,3 +334,18 @@ describe("Round 7 regressions", () => {
     expect(requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (lower(email))")[0].probeSql).toContain("GROUP BY lower(email)");
   });
 });
+
+describe("Round 8 regressions", () => {
+  it("sees NULLS NOT DISTINCT through block comments (R8 #1)", () => {
+    // splitStatements strips comments to whitespace before the index scanners run.
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email) NULLS/**/NOT/**/DISTINCT");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).not.toContain("IS NOT NULL"); // null keys kept
+  });
+
+  it("sees a per-key option hidden behind a comment (R8 #1)", () => {
+    const checks = requiredPreflightChecks("CREATE UNIQUE INDEX i ON t (email/**/DESC)");
+    expect(checks).toHaveLength(1);
+    expect(checks[0].probeSql).toBeNull(); // DESC option → manual review, not a bad probe
+  });
+});

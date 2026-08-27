@@ -137,35 +137,62 @@ export async function schemaFingerprint(
       WHERE s.relkind = 'S' AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
       ORDER BY 1, 2`,
   );
-  // Extensions — CREATE EXTENSION with an empty down leaves the extension (and
-  // all its objects) behind; the column/constraint fingerprint alone misses it.
+  // Extensions — CREATE EXTENSION with an empty down leaves the extension behind.
   const extensions = await client.query(
     `SELECT e.extname, e.extversion, n.nspname AS schema
        FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
       ORDER BY 1`,
   );
-  // Standalone user-defined types (enums, domains, composite types) — CREATE TYPE
-  // / ALTER TYPE with an incomplete down would otherwise pass rollback proof.
-  const types = await client.query(
-    `SELECT n.nspname AS schema, t.typname, t.typtype,
-            CASE
-              WHEN t.typtype = 'e' THEN (
-                SELECT string_agg(e.enumlabel, ',' ORDER BY e.enumsortorder)
-                  FROM pg_enum e WHERE e.enumtypid = t.oid)
-              WHEN t.typtype = 'd' THEN format_type(t.typbasetype, t.typtypmod)
-              ELSE NULL
-            END AS detail
-       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
-      WHERE ${NS}
-        AND (t.typtype IN ('e', 'd')
-             OR (t.typtype = 'c'
-                 AND EXISTS (SELECT 1 FROM pg_class c WHERE c.oid = t.typrelid AND c.relkind = 'c')))
+  // Extension MEMBERSHIP — ALTER EXTENSION ... ADD/DROP changes which objects
+  // belong to an extension (affecting drop/dependency behaviour) without touching
+  // extname/version. pg_describe_object gives a stable, name-based member identity.
+  const extensionMembers = await client.query(
+    `SELECT e.extname, pg_describe_object(d.classid, d.objid, d.objsubid) AS member
+       FROM pg_depend d
+       JOIN pg_extension e ON e.oid = d.refobjid
+      WHERE d.refclassid = 'pg_extension'::regclass AND d.deptype = 'e'
       ORDER BY 1, 2`,
+  );
+  // Enums — labels as an ordered ARRAY (not a comma-joined string, which would let
+  // ['a,b','c'] and ['a','b,c'] collide to the same detail).
+  const enums = await client.query(
+    `SELECT n.nspname AS schema, t.typname,
+            (SELECT array_agg(e.enumlabel ORDER BY e.enumsortorder)
+               FROM pg_enum e WHERE e.enumtypid = t.oid) AS labels
+       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE t.typtype = 'e' AND ${NS} ORDER BY 1, 2`,
+  );
+  // Domains — base type PLUS NOT NULL / DEFAULT / CHECK constraints, so a down that
+  // fails to restore ALTER DOMAIN ... SET/DROP NOT NULL|DEFAULT can't read restored.
+  const domains = await client.query(
+    `SELECT n.nspname AS schema, t.typname,
+            format_type(t.typbasetype, t.typtypmod) AS base_type,
+            t.typnotnull AS notnull,
+            pg_get_expr(t.typdefaultbin, 0) AS "default",
+            (SELECT array_agg(pg_get_constraintdef(c.oid) ORDER BY c.conname)
+               FROM pg_constraint c WHERE c.contypid = t.oid) AS constraints
+       FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE t.typtype = 'd' AND ${NS} ORDER BY 1, 2`,
+  );
+  // Standalone composite types — their ATTRIBUTES (the table-column query only
+  // covers ordinary/partitioned tables), so adding/dropping/retyping a composite
+  // attribute can't survive an ineffective down.
+  const compositeTypes = await client.query(
+    `SELECT n.nspname AS schema, t.typname, a.attname,
+            format_type(a.atttypid, a.atttypmod) AS type, a.attnum
+       FROM pg_type t
+       JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c'
+       JOIN pg_namespace n ON n.oid = t.typnamespace
+       JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      WHERE ${NS} ORDER BY 1, 2, 5`,
   );
   const canonical = JSON.stringify({
     schemas: schemas.rows,
     extensions: extensions.rows,
-    types: types.rows,
+    extensionMembers: extensionMembers.rows,
+    enums: enums.rows,
+    domains: domains.rows,
+    compositeTypes: compositeTypes.rows,
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,
