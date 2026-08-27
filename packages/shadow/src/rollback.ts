@@ -169,22 +169,37 @@ export async function schemaFingerprint(
             format_type(t.typbasetype, t.typtypmod) AS base_type,
             t.typnotnull AS notnull,
             pg_get_expr(t.typdefaultbin, 0) AS "default",
-            (SELECT array_agg(pg_get_constraintdef(c.oid) ORDER BY c.conname)
+            (SELECT array_agg(c.conname || ' => ' || pg_get_constraintdef(c.oid) ORDER BY c.conname)
                FROM pg_constraint c WHERE c.contypid = t.oid) AS constraints
        FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
       WHERE t.typtype = 'd' AND ${NS} ORDER BY 1, 2`,
   );
   // Standalone composite types — their ATTRIBUTES (the table-column query only
-  // covers ordinary/partitioned tables), so adding/dropping/retyping a composite
-  // attribute can't survive an ineffective down.
+  // covers ordinary/partitioned tables). LEFT JOIN so a ZERO-attribute composite
+  // still produces a row (its existence is recorded), and include the attribute
+  // COLLATION so a down that leaves a different collation changes the hash.
   const compositeTypes = await client.query(
     `SELECT n.nspname AS schema, t.typname, a.attname,
-            format_type(a.atttypid, a.atttypmod) AS type, a.attnum
+            format_type(a.atttypid, a.atttypmod) AS type, a.attnum, co.collname AS collation
        FROM pg_type t
        JOIN pg_class c ON c.oid = t.typrelid AND c.relkind = 'c'
        JOIN pg_namespace n ON n.oid = t.typnamespace
-       JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+       LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+       LEFT JOIN pg_collation co ON co.oid = a.attcollation
       WHERE ${NS} ORDER BY 1, 2, 5`,
+  );
+  // Range / multirange types — CREATE TYPE ... AS RANGE is schema-only (not
+  // data-mutating), so without this a surviving range type passes rollback proof.
+  const ranges = await client.query(
+    `SELECT n.nspname AS schema, t.typname, t.typtype,
+            format_type(r.rngsubtype, -1) AS subtype,
+            co.collname AS collation, opc.opcname AS subtype_opclass
+       FROM pg_range r
+       JOIN pg_type t ON t.oid = r.rngtypid
+       JOIN pg_namespace n ON n.oid = t.typnamespace
+       LEFT JOIN pg_collation co ON co.oid = r.rngcollation
+       LEFT JOIN pg_opclass opc ON opc.oid = r.rngsubopc
+      WHERE ${NS} ORDER BY 1, 2`,
   );
   const canonical = JSON.stringify({
     schemas: schemas.rows,
@@ -193,6 +208,7 @@ export async function schemaFingerprint(
     enums: enums.rows,
     domains: domains.rows,
     compositeTypes: compositeTypes.rows,
+    ranges: ranges.rows,
     columns: columns.rows,
     constraints: constraints.rows,
     indexes: indexes.rows,
