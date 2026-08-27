@@ -49,9 +49,12 @@ export default function Landing() {
           dry-runs them on a shadow database, proves the rollback, and refuses to touch prod until a human approves.
         </p>
         <div className="hero-ctas">
-          <Link href="/login" className="btn btn-cyan btn-lg">Sign in to the console</Link>
+          <Link href="/login" className="btn btn-cyan btn-lg">Login to Console</Link>
           <Link href="/demo" className="btn btn-lg">Watch the replay demo</Link>
         </div>
+        <p style={{ margin: "14px 0 0", fontSize: 13, color: "var(--text-dim)" }}>
+          Demo credentials are pre-filled — just click <b style={{ color: "var(--text)" }}>Login to Console</b>. No signup.
+        </p>
       </header>
 
       <section className="mk-section" id="how">

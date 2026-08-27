@@ -26,10 +26,30 @@ async function probeDb(url: string | undefined): Promise<"green" | "red" | undef
   }
 }
 
+/** Liveness probe for an HTTP service (the TrueForge harness). Any response —
+ *  even a 404 — means reachable; a network error/timeout means down. */
+async function probeHttp(url: string | undefined): Promise<"green" | "red" | undefined> {
+  if (!url) return undefined;
+  try {
+    await fetch(url, { method: "GET", signal: AbortSignal.timeout(1500) });
+    return "green";
+  } catch {
+    return "red";
+  }
+}
+
 /** Positive-int env read matching the guarded-apply defaults in apply.ts. */
 function posIntEnv(name: string, def: number): number {
   const n = Number(process.env[name]);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+}
+
+/** Never render a secret's value — show *** when it is set, "not configured"
+ *  otherwise. The env var NAME is not a value and must never be shown as one. */
+function secretState(name: string): { value: string; tone?: string } {
+  return process.env[name]?.trim()
+    ? { value: "***", tone: "green" }
+    : { value: "not configured" };
 }
 
 function Row({ label, value, tone }: { label: string; value: string; tone?: string }) {
@@ -53,11 +73,16 @@ export default async function Settings() {
   const targetUrl = process.env.TARGET_DB_URL;
   const shadowUrl = process.env.SHADOW_ADMIN_URL;
   const sentinelUrl = process.env.DATABASE_URL;
-  const [targetTone, shadowTone, sentinelTone] = await Promise.all([
+  const trueforgeUrl = process.env.TRUEFORGE_BASE_URL ?? "http://localhost:8790";
+  const [targetTone, shadowTone, sentinelTone, trueforgeTone] = await Promise.all([
     probeDb(targetUrl),
     probeDb(shadowUrl),
     probeDb(sentinelUrl),
+    probeHttp(trueforgeUrl),
   ]);
+  // Secrets are shown as *** (set) / "not configured" — never their raw value.
+  const qodo = secretState("QODO_API_KEY");
+  const github = secretState("GITHUB_TOKEN");
 
   // Real apply guards — same env + defaults the executor (apply.ts) uses.
   const lockMs = posIntEnv("APPLY_LOCK_TIMEOUT_MS", 3000);
@@ -108,14 +133,18 @@ export default async function Settings() {
 
       <div className="glass" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Integrations</h3>
-        <Row label="TrueForge harness" value="http://localhost:8790" tone="amber" />
+        <Row
+          label="TrueForge harness"
+          value={trueforgeTone === "green" ? trueforgeUrl : `${trueforgeUrl} · unreachable`}
+          tone={trueforgeTone === "green" ? "green" : "amber"}
+        />
         <Row
           label="Copilot (Euron · BYOK)"
-          value={euronKey ? `${euronModel} · read-only` : "EURON_API_KEY"}
-          tone={euronKey ? "green" : "amber"}
+          value={euronKey ? `${euronModel} · read-only` : "not configured"}
+          tone={euronKey ? "green" : undefined}
         />
-        <Row label="Qodo review" value="QODO_API_KEY" />
-        <Row label="GitHub PR intake" value="GITHUB_TOKEN" />
+        <Row label="Qodo review" value={qodo.value} tone={qodo.tone} />
+        <Row label="GitHub PR intake" value={github.value} tone={github.tone} />
       </div>
 
       <div className="glass">
