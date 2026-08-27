@@ -64,6 +64,8 @@ export default async function Settings() {
   const stmtMs = posIntEnv("APPLY_STATEMENT_TIMEOUT_MS", 30000);
   const connMs = posIntEnv("APPLY_CONNECT_TIMEOUT_MS", 10000);
   const applyGuardsTone = targetTone === "red" ? "red" : "green";
+  const euronKey = Boolean(process.env.EURON_API_KEY?.trim());
+  const euronModel = process.env.EURON_MODEL?.trim() || "gpt-4.1-nano";
   const initials =
     user
       .split(/[\s@._-]+/)
@@ -107,6 +109,11 @@ export default async function Settings() {
       <div className="glass" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Integrations</h3>
         <Row label="TrueForge harness" value="http://localhost:8790" tone="amber" />
+        <Row
+          label="Copilot (Euron · BYOK)"
+          value={euronKey ? `${euronModel} · read-only` : "EURON_API_KEY"}
+          tone={euronKey ? "green" : "amber"}
+        />
         <Row label="Qodo review" value="QODO_API_KEY" />
         <Row label="GitHub PR intake" value="GITHUB_TOKEN" />
       </div>

@@ -20,6 +20,16 @@ const rejected = [
   "ALTER TABLE users ADD COLUMN x int",
   "SET statement_timeout = 0",
   "COPY users TO '/tmp/out'",
+  // State-mutating / session-escaping functions that survive a READ ONLY txn.
+  // These are valid SELECTs, so only the function denylist catches them.
+  "SELECT pg_terminate_backend(pid) FROM pg_stat_activity",
+  "SELECT pg_cancel_backend(1234)",
+  "SELECT pg_advisory_lock(1)",
+  "SELECT set_config('statement_timeout', '0', false)",
+  "SELECT set_config('statement_timeout','0',false), pg_sleep(600)",
+  "SELECT pg_sleep(600)",
+  "SELECT nextval('users_id_seq')",
+  "WITH t AS (SELECT set_config('statement_timeout','0',false)) SELECT * FROM t",
   "",
 ];
 
