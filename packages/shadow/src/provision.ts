@@ -190,7 +190,11 @@ export async function dumpTargetSchema(targetUrl: string): Promise<string> {
   // rejects, so the caller's failure handler runs. Override with $PG_DUMP_TIMEOUT_MS.
   const dumpTimeoutMs = (() => {
     const n = Number(process.env.PG_DUMP_TIMEOUT_MS);
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60_000;
+    // CLAMP to Node's max timer delay — a value above 2^31-1 ms is silently
+    // clamped to 1 ms by setTimeout, which would kill every pg_dump almost
+    // immediately instead of allowing the requested (long) duration.
+    const MAX = 2_147_483_647;
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), MAX) : 60_000;
   })();
   let lastErr: unknown;
   for (const bin of pgDumpCandidates()) {
