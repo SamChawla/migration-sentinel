@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 432" width="760" height="432" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Pipeline: intake, generate up/down, shadow dry-run (blast radius + rollback proof), data pre-flight, Qodo review, human gate, guarded apply, audit">
+  <defs>
+    <filter id="g2" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .card { fill:#0d1117; stroke:#21262d; stroke-width:1.5; }
+      .hd   { fill:#7d8590; font-size:12.5px; font-weight:700; letter-spacing:2px; }
+      .rail { stroke:#30363d; stroke-width:2; }
+      .fill { stroke:#38bdf8; stroke-width:2.5; stroke-linecap:round; stroke-dasharray:322;
+              filter:url(#g2); animation:fill 8s linear infinite; }
+      .dot  { stroke:#0d1117; stroke-width:2; filter:url(#g2); }
+      .cy { fill:#38bdf8 } .am { fill:#f59e0b } .gr { fill:#3fb950 }
+      .lbl  { fill:#c9d1d9; font-size:15px; font-weight:600; }
+      .sub  { fill:#7d8590; font-size:12.5px; font-weight:400; }
+      .step { opacity:.2; animation:wave 8s linear infinite; }
+      .s1{animation-delay:0s}  .s2{animation-delay:.6s}  .s3{animation-delay:1.2s}
+      .s4{animation-delay:1.8s} .s5{animation-delay:2.4s} .s6{animation-delay:3s}
+      .s7{animation-delay:3.6s} .s8{animation-delay:4.2s}
+      .ring { fill:none; stroke:#f59e0b; stroke-width:2; opacity:0; animation:hold 2.4s ease-in-out infinite; }
+      @keyframes wave { 0%{opacity:.2} 6%{opacity:1} 86%{opacity:1} 100%{opacity:.2} }
+      @keyframes fill { 0%{stroke-dashoffset:322} 60%{stroke-dashoffset:0} 86%{stroke-dashoffset:0} 100%{stroke-dashoffset:322} }
+      @keyframes hold { 0%,100%{opacity:0} 50%{opacity:.6} }
+    </style>
+  </defs>
+
+  <rect class="card" x="8" y="8" width="744" height="416" rx="16"/>
+  <text class="hd" x="40" y="34">ONE PIPELINE &#183; NOTHING SKIPS THE GATE</text>
+
+  <!-- rail + animated fill -->
+  <line class="rail" x1="64" y1="52" x2="64" y2="374"/>
+  <line class="fill" x1="64" y1="52" x2="64" y2="374"/>
+
+  <g class="step s1"><circle class="dot cy" cx="64" cy="52"  r="7"/><text class="lbl" x="92" y="57">intake</text></g>
+  <g class="step s2"><circle class="dot cy" cx="64" cy="98"  r="7"/><text class="lbl" x="92" y="103">generate up/down <tspan class="sub">&#183; from intent or raw SQL</tspan></text></g>
+  <g class="step s3"><circle class="dot cy" cx="64" cy="144" r="7"/><text class="lbl" x="92" y="149">shadow dry-run <tspan class="sub">&#183; blast radius + rollback proof</tspan></text></g>
+  <g class="step s4"><circle class="dot cy" cx="64" cy="190" r="7"/><text class="lbl" x="92" y="195">data pre-flight <tspan class="sub">&#183; exact probes on the real target</tspan></text></g>
+  <g class="step s5"><circle class="dot cy" cx="64" cy="236" r="7"/><text class="lbl" x="92" y="241">Qodo review <tspan class="sub">&#183; advisory SQL review</tspan></text></g>
+
+  <g class="step s6 gate">
+    <circle class="ring" cx="64" cy="282" r="13"/>
+    <circle class="dot am" cx="64" cy="282" r="7"/>
+    <rect x="105" y="274" width="4.5" height="16" rx="1.5" fill="#f0b429"/>
+    <rect x="115" y="274" width="4.5" height="16" rx="1.5" fill="#f0b429"/>
+    <text class="lbl" x="128" y="287" fill="#f0b429">HUMAN GATE <tspan class="sub" fill="#c9922e">&#183; the agent pauses; a human decides</tspan></text>
+  </g>
+
+  <g class="step s7"><circle class="dot gr" cx="64" cy="328" r="7"/><text class="lbl" x="92" y="333">guarded apply <tspan class="sub">&#183; lock/statement timeout, one txn, auto-rollback</tspan></text></g>
+  <g class="step s8"><circle class="dot gr" cx="64" cy="374" r="7"/><text class="lbl" x="92" y="379">audit <tspan class="sub">&#183; apply_run + append-only log</tspan></text></g>
+
+  <text class="sub" x="40" y="408">a <tspan fill="#f0808a">blocked</tspan> migration (DROP TABLE / TRUNCATE / unbounded UPDATE&#183;DELETE) can't be pushed through &#8212; even with approval</text>
+</svg>

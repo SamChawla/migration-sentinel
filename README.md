@@ -15,10 +15,9 @@
 
 Built for the **TrueForge Agent Harness Hackathon** (WeMakeDevs × TrueFoundry). The agent runs on TrueForge; every migration travels one pipeline; nothing skips the gate.
 
-```
-intake → generate up/down → shadow dry-run (blast radius + rollback proof) → data pre-flight
-       → Qodo review → ⏸ HUMAN GATE → guarded apply → audit
-```
+<p align="center">
+  <img src="assets/pipeline-flow.svg" alt="intake → generate up/down → shadow dry-run (blast radius + rollback proof) → data pre-flight → Qodo review → ⏸ human gate → guarded apply → audit" width="740">
+</p>
 
 ---
 
