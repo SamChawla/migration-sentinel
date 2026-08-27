@@ -12,7 +12,7 @@ const TRACE: Record<string, string[]> = {
   Intake: ["› request received — drop_legacy_notes", "› intake: natural-language intent", "✓ queued for the pipeline"],
   Generate: ["› TrueForge session opened", "› streaming turn — authoring up / down…", "✓ artifact written (up.sql, down.sql)", "⚠ down cannot restore dropped data"],
   Review: ["› Qodo review requested on the generated SQL", "✓ passed_with_warnings · 1 finding"],
-  "Dry-run": ["› pg_dump --schema-only target", "› provisioning ephemeral shadow :5434", "› applying up → down on the clone", "✓ schema restores — rollback proof recorded", "› blast: ~1,204,338 rows · AccessExclusiveLock · ~14s", "⛔ DROP COLUMN destroys data — irreversible"],
+  "Dry-run": ["› pg_dump --schema-only target", "› provisioning ephemeral shadow :5434", "› applying up → down on the clone", "⚠ schema shape restores, but dropped-column data cannot — rollback NOT proven", "› blast: ~1,204,338 rows · AccessExclusiveLock · ~14s", "⛔ DROP COLUMN destroys data — irreversible"],
   Gate: ["⏸ apply_migration is approval-required", "⏸ turn paused — awaiting operator", "› gate policy: RED · typed confirmation required"],
   Decision: ['› operator typed "users" and approved', "› user.tool_approval → allow", "› resuming the paused turn"],
   Apply: ["› BEGIN · lock_timeout=3s · statement_timeout=30s", "› ALTER TABLE public.users DROP COLUMN legacy_notes", "✓ COMMIT — applied in 480 ms", "✓ apply_run + audit event written"],
@@ -63,6 +63,10 @@ export default function DemoReplay() {
   const progress = ((i + (trace.length ? lineN / trace.length : 1)) / DEMO_STEPS.length) * 100;
 
   const goto = (n: number) => { setPlaying(false); setI(Math.max(0, Math.min(n, DEMO_STEPS.length - 1))); setLineN(0); };
+  // "Complete" only when the LAST phase has finished streaming — not merely
+  // because the index is last (Apply still streams while atEnd is true).
+  const complete = atEnd && !playing && lineN >= trace.length;
+  const replay = () => { setI(0); setLineN(0); setPlaying(true); }; // reset AND play in one click
   const lineTone = (l: string) => l.startsWith("✓") ? "var(--safe)" : l.startsWith("⛔") ? "var(--danger)" : l.startsWith("⚠") ? "var(--warn)" : l.startsWith("⏸") ? "var(--hold)" : "var(--text-dim)";
 
   return (
@@ -73,7 +77,7 @@ export default function DemoReplay() {
             Live Pipeline Run
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 11px", borderRadius: 999, border: "1px solid var(--cyan-deep)", color: "var(--cyan)", fontSize: 11, fontWeight: 500 }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--cyan)", boxShadow: "var(--glow-cyan)", animation: playing ? "pulse 1.4s ease-in-out infinite" : "none" }} />
-              {playing ? "running" : atEnd ? "complete" : "paused"}
+              {playing ? "running" : complete ? "complete" : "paused"}
             </span>
           </h1>
           <p style={{ color: "var(--muted)", fontSize: ".9rem", marginTop: 6 }}>
@@ -112,7 +116,7 @@ export default function DemoReplay() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 18, alignItems: "start" }}>
+      <div className="demo-grid">
         {/* Main panel — the step content */}
         <section className="glass" style={{ padding: "1.5rem", animation: "fadeIn .35s ease" }} key={i}>
           {step.status === "awaiting_approval" && (
@@ -189,8 +193,8 @@ export default function DemoReplay() {
       {/* Transport controls */}
       <div style={{ display: "flex", gap: 10, marginTop: 16, alignItems: "center" }}>
         <button className="btn" disabled={i === 0} onClick={() => goto(i - 1)}>‹ Prev</button>
-        <button className="btn btn-cyan" onClick={() => (atEnd ? goto(0) : setPlaying((p) => !p))}>
-          {atEnd ? "↻ Replay" : playing ? "❚❚ Pause" : "▶ Play"}
+        <button className="btn btn-cyan" onClick={() => (complete ? replay() : setPlaying((p) => !p))}>
+          {complete ? "↻ Replay" : playing ? "❚❚ Pause" : "▶ Play"}
         </button>
         <button className="btn" disabled={atEnd} onClick={() => goto(i + 1)}>Next ›</button>
         <span className="mono" style={{ marginLeft: "auto", fontSize: 12, color: "var(--faint)" }}>

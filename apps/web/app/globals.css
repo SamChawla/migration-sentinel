@@ -415,6 +415,7 @@ label.lbl {
 
 /* ═══ Page head ═══════════════════════════════════════════ */
 .page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.demo-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 18px; align-items: start; }
 .page-head h1 { margin: 0 0 4px; }
 
 /* ═══ Utility ═════════════════════════════════════════════ */
@@ -683,6 +684,7 @@ label.lbl {
   /* Hide lower-priority HUD items on phones (Home is in the nav, the name is in
      the account menu) so the header never overflows. */
   .hud-home, .hud-user { display: none; }
+  .demo-grid { grid-template-columns: 1fr; } /* stack the demo panels on mobile */
 }
 @media (max-width: 640px) {
   .mk-grid, .pricing-grid, .doc-arch-grid { grid-template-columns: 1fr; }
