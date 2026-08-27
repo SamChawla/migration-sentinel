@@ -8,6 +8,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const MAX_QUESTION = 2000;
+const MAX_HISTORY_MSG_CHARS = 4000;
+const MAX_HISTORY_TOTAL_CHARS = 12000;
 
 /**
  * Read-only migration copilot. Auth-gated (approver session), scoped to ONE
@@ -42,6 +44,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         .slice(-8)
     : [];
 
+  // Bound history payload size (count is already capped, but content is not) so a
+  // caller can't force oversized provider payloads / BYOK spend across rounds.
+  const historyChars = history.reduce((n: number, m: { content: string }) => n + m.content.length, 0);
+  if (history.some((m: { content: string }) => m.content.length > MAX_HISTORY_MSG_CHARS) || historyChars > MAX_HISTORY_TOTAL_CHARS) {
+    return NextResponse.json({ error: "Conversation history is too large." }, { status: 400 });
+  }
+
   const rec = await getRequest(id);
   if (!rec) return NextResponse.json({ error: "not found" }, { status: 404 });
 
@@ -51,7 +60,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   ]);
 
   try {
-    const result = await answerMigrationQuestion({ rec, audit, targetUrl, question, history });
+    const result = await answerMigrationQuestion({ rec, audit, targetUrl, question, history, signal: req.signal });
     return NextResponse.json(result);
   } catch (e) {
     if (e instanceof EuronError) {

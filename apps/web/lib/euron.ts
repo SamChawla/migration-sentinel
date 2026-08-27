@@ -50,6 +50,13 @@ export function euronModel(): string {
   return process.env.EURON_MODEL?.trim() || "gpt-4.1-nano";
 }
 
+/** Per-call request timeout (ms). Bounds a single completion so a stalled
+ *  provider can never hold a server slot indefinitely. */
+function euronTimeoutMs(): number {
+  const n = Number(process.env.EURON_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60_000;
+}
+
 export class EuronError extends Error {}
 
 interface CompletionChoice {
@@ -75,6 +82,11 @@ export async function chatComplete(opts: {
     );
   }
 
+  // Always bound the call with our own timeout, and honor the caller's abort
+  // (request disconnect) too — whichever fires first tears the fetch down.
+  const timeout = AbortSignal.timeout(euronTimeoutMs());
+  const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+
   let res: Response;
   try {
     res = await fetch(`${baseUrl()}/chat/completions`, {
@@ -89,10 +101,14 @@ export async function chatComplete(opts: {
         temperature: opts.temperature ?? 0.2,
         ...(opts.tools ? { tools: opts.tools, tool_choice: "auto" } : {}),
       }),
-      signal: opts.signal,
+      signal,
     });
   } catch (e) {
-    throw new EuronError(`Could not reach Euron (${baseUrl()}): ${(e as Error).message}`);
+    const err = e as Error;
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new EuronError(`Euron request aborted after ${euronTimeoutMs()} ms (timeout or client disconnect).`);
+    }
+    throw new EuronError(`Could not reach Euron (${baseUrl()}): ${err.message}`);
   }
 
   if (!res.ok) {

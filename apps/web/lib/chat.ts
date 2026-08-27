@@ -9,12 +9,19 @@
  */
 import { Client } from "pg";
 import type { RequestRecord, AuditEventRow } from "@sentinel/db/queries";
-import { assertReadOnlySelect } from "@sentinel/core";
+import { runReadOnlyQuery as runGuardedReadOnly } from "@sentinel/shadow";
 import { chatComplete, type ChatMessage, type ToolDef } from "./euron";
 
 const MAX_ROWS = 50;
 const MAX_TOOL_ROUNDS = 4;
 const QUERY_TIMEOUT_MS = 5000;
+// Independent wall-clock deadline. The DB statement_timeout bounds server-side
+// execution and the guard refuses set_config/SET so SQL can't disable it — but a
+// network-stalled socket still needs a client-side cutoff that destroys the
+// connection rather than holding the request open.
+const QUERY_DEADLINE_MS = QUERY_TIMEOUT_MS + 3000;
+const MAX_SQL_CONTEXT_CHARS = 4000;
+const MAX_TOOL_RESULT_CHARS = 8000;
 
 export interface RanQuery {
   sql: string;
@@ -28,38 +35,51 @@ export interface CopilotAnswer {
   queries: RanQuery[];
 }
 
+function clip(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max)}\n…(truncated ${s.length - max} chars)` : s;
+}
+
 // ── Read-only SQL execution ─────────────────────────────────────────────────
-// The shape guard (assertReadOnlySelect) lives in @sentinel/core so the
-// "read-only" promise is unit-tested; here we add the run-time READ ONLY
-// transaction that refuses a write a second time.
+// Guard + executor are the canonical, unit-tested ones from @sentinel/shadow
+// (ADR-009): a single-statement SELECT/WITH allowlist that ALSO refuses
+// state-mutating / session-escaping functions (pg_terminate_backend, set_config,
+// pg_advisory*, pg_sleep, …), executed inside a READ ONLY transaction that caps
+// rows AT THE DATABASE (LIMIT rowCap+1) so a huge result never buffers in memory.
 
-/** Execute a guarded read-only SELECT against the target DB. Never throws for a
- *  SQL error — returns it as data so the model can reason about it. */
-async function runReadOnlyQuery(targetUrl: string, raw: string): Promise<RanQuery> {
-  let sql: string;
+/** Race `p` against a wall-clock deadline; on timeout destroy `client` so a
+ *  stalled socket can't hold the request open past `ms`. */
+async function withDeadline<T>(p: Promise<T>, ms: number, client: Client): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      client.end().catch(() => {}); // force-cancel the in-flight query
+      reject(new Error(`Query exceeded ${ms} ms deadline.`));
+    }, ms);
+  });
   try {
-    sql = assertReadOnlySelect(raw);
-  } catch (e) {
-    return { sql: raw, error: (e as Error).message };
+    return await Promise.race([p, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    // If the deadline won, `p` is still pending and its later rejection (the
+    // guarded query failing on the destroyed client) would be unhandled — swallow it.
+    p.catch(() => {});
   }
+}
 
+/** Execute a guarded read-only query against the target DB. Never throws for a
+ *  SQL/guard error — returns it as data so the model can reason about it. */
+async function runTargetQuery(targetUrl: string, raw: string): Promise<RanQuery & { _rows?: unknown[] }> {
   const client = new Client({ connectionString: targetUrl, connectionTimeoutMillis: 4000 });
   try {
     await client.connect();
-    await client.query("BEGIN READ ONLY");
-    await client.query(`SET LOCAL statement_timeout = ${QUERY_TIMEOUT_MS}`);
-    const result = await client.query(sql);
-    await client.query("ROLLBACK").catch(() => {});
-    const rows = result.rows.slice(0, MAX_ROWS);
-    return {
-      sql,
-      rowCount: result.rowCount ?? rows.length,
-      truncated: result.rows.length > MAX_ROWS,
-      // rows travel back to the model as JSON; kept on the RanQuery via a side field.
-      ...(rows.length ? { _rows: rows } : {}),
-    } as RanQuery & { _rows?: unknown[] };
+    const { rows, truncated } = await withDeadline(
+      runGuardedReadOnly(client, raw, { timeoutMs: QUERY_TIMEOUT_MS, rowCap: MAX_ROWS }),
+      QUERY_DEADLINE_MS,
+      client,
+    );
+    return { sql: raw.trim(), rowCount: rows.length, truncated, ...(rows.length ? { _rows: rows } : {}) };
   } catch (e) {
-    return { sql, error: (e as Error).message };
+    return { sql: raw.trim(), error: (e as Error).message };
   } finally {
     await client.end().catch(() => {});
   }
@@ -95,10 +115,10 @@ function buildSystemContext(rec: RequestRecord, audit: AuditEventRow[]): string 
     `Qodo review: ${rec.qodoVerdict}${rec.qodoFindings.length ? ` — ${rec.qodoFindings.join("; ")}` : ""}`,
     "",
     "UP SQL:",
-    rec.upSql,
+    clip(rec.upSql, MAX_SQL_CONTEXT_CHARS),
     "",
     "DOWN SQL (rollback):",
-    rec.downSql || "(none provided)",
+    clip(rec.downSql || "(none provided)", MAX_SQL_CONTEXT_CHARS),
     "",
     "Blast findings:",
     findings,
@@ -137,6 +157,9 @@ export async function answerMigrationQuestion(input: {
   targetUrl: string | null;
   question: string;
   history: { role: "user" | "assistant"; content: string }[];
+  /** Request abort signal — combined with the provider's own per-call timeout so
+   *  a client disconnect tears down in-flight Euron calls across tool rounds. */
+  signal?: AbortSignal;
 }): Promise<CopilotAnswer> {
   const messages: ChatMessage[] = [
     { role: "system", content: buildSystemContext(input.rec, input.audit) },
@@ -147,7 +170,7 @@ export async function answerMigrationQuestion(input: {
   const queries: RanQuery[] = [];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    const reply = await chatComplete({ messages, tools: TOOLS });
+    const reply = await chatComplete({ messages, tools: TOOLS, signal: input.signal });
     messages.push(reply);
 
     const calls = reply.tool_calls ?? [];
@@ -174,18 +197,18 @@ export async function answerMigrationQuestion(input: {
         continue;
       }
 
-      const ran = (await runReadOnlyQuery(input.targetUrl, sqlArg)) as RanQuery & { _rows?: unknown[] };
+      const ran = await runTargetQuery(input.targetUrl, sqlArg);
       const { _rows, ...publicPart } = ran;
       queries.push(publicPart);
       messages.push({
         role: "tool",
         tool_call_id: call.id,
-        content: JSON.stringify({ ...publicPart, rows: _rows ?? [] }),
+        content: clip(JSON.stringify({ ...publicPart, rows: _rows ?? [] }), MAX_TOOL_RESULT_CHARS),
       });
     }
   }
 
   // Ran out of tool rounds — ask for a final grounded answer with no more tools.
-  const final = await chatComplete({ messages });
+  const final = await chatComplete({ messages, signal: input.signal });
   return { answer: final.content?.trim() || "(no answer)", queries };
 }
