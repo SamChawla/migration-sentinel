@@ -38,8 +38,6 @@ intake → generate up/down → shadow dry-run (blast radius + rollback proof) �
 - [Tests, CI & coverage](#tests-ci--coverage)
 - [Project structure](#project-structure)
 - [Safety & control](#safety--control)
-- [Qodo Code Review Evidence](#qodo-code-review-evidence)
-- [Roadmap](#roadmap)
 - [Built with](#built-with)
 
 ---
@@ -68,6 +66,10 @@ We're the **analyze → prove → gate** layer in front of whatever you use to a
 The model **proposes**; deterministic policy **disposes**. The severity, the rollback verdict, and the gate decision are all machine-computed — never chosen by the LLM.
 
 ## The pipeline
+
+<p align="center">
+  <img src="assets/workflow.svg" alt="Migration Sentinel pipeline — Intake, Generate, Dry-run, Pre-flight, Qodo, human Gate, Apply, Audit" width="100%">
+</p>
 
 Every request travels the same path. The agent orchestrates it and then **physically pauses** at the gate — the apply tool cannot run until a human decision is recorded in our own database.
 
@@ -276,9 +278,10 @@ scripts/             seed.ts · seed-sentinel.ts · smoke_live.ts · verify_blas
 .github/workflows/   ci.yml — typecheck + tests + coverage against live Postgres services
 ```
 
-Meaningful code lands via a **native stacked-PR** set (`feat/foundations` →
+Meaningful code landed via a **native stacked-PR** set (`feat/foundations` →
 `feat/core-db` → `feat/safety-core` → `feat/agent-qodo` → `feat/web-console` →
-`feat/scripts`), each reviewed by Qodo before merge — see below.
+`feat/scripts`), each reviewed by the Qodo GitHub App and re-reviewed until clean
+before merge.
 
 ## Safety & control
 
@@ -287,70 +290,6 @@ Meaningful code lands via a **native stacked-PR** set (`feat/foundations` →
 - **The gate is a system property** — the apply executor calls `assertApproved()` against the database of record and re-derives `blocked` from the SQL; the model cannot self-approve, and a blocked migration can't be pushed through even with human approval.
 - **Guarded apply** — `SET lock_timeout` + `statement_timeout`, single transaction, auto-`ROLLBACK` on error/timeout, and an `apply_run` + audit row.
 - **Least privilege** — the target is read-only until the approved apply; the NL query box is SELECT-only, enforced four independent ways.
-
-## Qodo Code Review Evidence
-
-Every line of Migration Sentinel landed through a **Qodo-reviewed pull request** — `main`
-never took a direct push of meaningful code. The work shipped as a **native stacked-PR**
-set, and each PR was reviewed by the **Qodo GitHub App** (triggered with `/agentic_review`),
-its findings resolved with the [`qodo-pr-resolver`](https://github.com/qodo-ai/qodo-skills)
-workflow, and then **re-reviewed** — for **13 rounds** — until zero findings remained.
-
-**All six PRs are merged into `main`:**
-
-| PR | Scope | Status |
-|---|---|---|
-| [#1](https://github.com/SamChawla/migration-sentinel/pull/1) | foundations — workspace, Docker stack, fixtures | ✅ merged |
-| [#2](https://github.com/SamChawla/migration-sentinel/pull/2) | core + db — state machine, gate policy, Drizzle control plane | ✅ merged |
-| [#3](https://github.com/SamChawla/migration-sentinel/pull/3) | safety core — blast classifier, rollback proof, pre-flight | ✅ merged |
-| [#4](https://github.com/SamChawla/migration-sentinel/pull/4) | agent + qodo — TrueForge orchestrator, guarded apply, review | ✅ merged |
-| [#5](https://github.com/SamChawla/migration-sentinel/pull/5) | web — Next.js control plane + Approval Console | ✅ merged |
-| [#6](https://github.com/SamChawla/migration-sentinel/pull/6) | scripts — seeders, live smoke test, blast verifier | ✅ merged |
-
-**The review converged, round over round** (findings resolved per round, all four open PRs):
-
-```
-R1  R2  R3  R4  R5  R6  R7  R8  R9  R10 R11 R12 R13
-43  29  21  24  18  14  14  11  10  14   9  11   6      →  0 open
-```
-
-Every round ended at **0 unanswered findings** (verified by paginating each PR's review
-comments); every fix was answered inline on its Qodo thread and summarised in a
-`## Qodo Fix Summary — Round N` comment on the PR. The suite grew **76 → 167 tests** —
-**each finding got a regression test** (see `shadow/qodo-fixes`).
-
-**What Qodo actually caught** (a representative slice of ~220 findings):
-
-- **SQL-parsing safety** — a read-only-guard bypass and statement-splitter flaws where a
-  keyword hidden in a string / comment / dollar-quote / nested comment could mask a
-  destructive statement; fixed by a real lexer used everywhere a keyword is judged.
-- **Rollback-proof completeness** — the schema fingerprint was extended, gap by gap, to
-  every object class (views, functions, triggers, sequences + ownership, all user schemas,
-  extensions + membership, enums, domains, composite-type attributes, ranges) so a
-  migration can't read "restored" when it isn't.
-- **Guarded-apply contract** — the executor refuses migrations that carry their own
-  transaction control (`COMMIT`, `PREPARE TRANSACTION`, `COMMIT PREPARED`) or disable its
-  timeouts (`SET`/`RESET`/`set_config` of `statement_timeout`); it reports honestly when a
-  lost COMMIT/autocommit response leaves the target state unknown.
-- **Concurrency & state** — atomic, guarded status transitions (approve/reject/apply
-  claims), strand-proofing (a claimed request always reaches a terminal state), and a
-  reset guard that runs its check + wipe in one `SERIALIZABLE` transaction.
-- **Security** — a forgeable audit actor, secrets in `pg_dump` argv / logs, and cookie
-  handling were all hardened.
-
-A recurring theme was **fixes creating the next round's finding** (a `pg_dump` timeout that
-overflowed `setTimeout`; a search that matched `%` too broadly; a wall-clock deadline that
-awaited an unbounded teardown) — which is exactly the value of an adversarial reviewer that
-re-reads its own diff.
-
-## Roadmap
-
-- [x] CI (GitHub Actions) — typecheck + tests + coverage against live Postgres services
-- [ ] Route the guarded apply through a TrueForge **gated MCP tool** + sandbox (make the harness even more central)
-- [ ] GitHub PR intake — paste a PR link → review its migration file through the same pipeline
-- [ ] Opt-in **sampled-data mode** for *measured* (not estimated) rewrite times
-- [ ] Pluggable engine adapters beyond Postgres
-- [ ] ~3-minute demo video
 
 ## Built with
 
