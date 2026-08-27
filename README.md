@@ -19,6 +19,9 @@ Built for the **TrueForge Agent Harness Hackathon** (WeMakeDevs × TrueFoundry).
   <img src="assets/pipeline-flow.svg" alt="intake → generate up/down → shadow dry-run (blast radius + rollback proof) → data pre-flight → Qodo review → ⏸ human gate → guarded apply → audit" width="740">
 </p>
 
+> **▶ Run it locally in ~5 minutes** — install, seed, and log in with one click:
+> **[GETTING_STARTED.md](GETTING_STARTED.md)**.
+
 ---
 
 ## Table of Contents
@@ -187,17 +190,23 @@ erDiagram
 
 ## Getting started
 
+**Full walkthrough (prereqs, env, copilot, troubleshooting): [GETTING_STARTED.md](GETTING_STARTED.md).** The short version:
+
 ```bash
 pnpm install
-cp .env.example .env                 # fill in keys (see below)
-docker compose up -d                 # sentinel-db :5435, target-db :5433, shadow-db :5434
-pnpm --filter @sentinel/db migrate   # control-plane tables
-pnpm db:seed                         # seed target-db with users/orders (50k / 115k rows)
-pnpm dev                             # control plane + Approval Console (:3000)
+cp .env.example .env                          # scripts / agent / CLI
+cp apps/web/.env.example apps/web/.env.local  # the running web app (Next reads this one)
+docker compose up -d                          # sentinel-db :5435, target-db :5433, shadow-db :5434
+pnpm --filter @sentinel/db migrate            # control-plane tables
+pnpm db:seed                                  # seed target-db with users/orders (~50k / ~115k rows)
+pnpm db:seed:sentinel                          # seed the console with demo migration requests
+pnpm dev                                      # control plane + Approval Console (:3000)
 
 # Optional — only needed to generate SQL from an English intent:
-npx @truefoundry/trueforge           # TrueForge server (:8790), with a model-provider key
+npx @truefoundry/trueforge                    # TrueForge server (:8790), with a model-provider key
 ```
+
+Then open **http://localhost:3000** and click **Login to Console** — the demo token is pre-filled, so one click lands you on the dashboard and starts the guided walkthrough.
 
 Raw-SQL intake runs the whole pipeline **live** — shadow dry-run, rollback proof, pre-flight, gate, guarded apply — with **no** model or TrueForge server required. TrueForge + a model key are only for the *generate-from-intent* step.
 
@@ -224,6 +233,9 @@ pnpm typecheck                       # packages + web app
 | `TRUEFORGE_TOKEN` | *Only* for a hosted/auth-enabled TrueForge (local server needs none) |
 | `ANTHROPIC_API_KEY` | The model-provider key the TrueForge server uses to generate SQL |
 | `QODO_API_KEY` | In-app Qodo CLI review (unset → review is skipped, pipeline still runs) |
+| `EURON_API_KEY` | The read-only "Ask about this migration" copilot (OpenAI-compatible / Euron; unset → copilot disabled) |
+| `EURON_BASE_URL` · `EURON_MODEL` | Copilot endpoint + model (default `…/api/v1/euri`, `gpt-4.1-nano`) |
+| `NEXT_PUBLIC_DEMO_TOKEN` | Demo only — pre-fills the login token for one-click "Login to Console". Leave unset in production |
 | `PG_DUMP` | Override the `pg_dump` path if not auto-found |
 
 > Next reads `apps/web/.env.local`, **not** the repo-root `.env` — mirror the DB URLs there for the running app.
