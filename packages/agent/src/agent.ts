@@ -199,22 +199,31 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
       ].join(" | "),
     });
 
-    if (report.blocked) {
-      await insertAuditEvent({
-        migrationRequestId: requestId,
-        actor: "sentinel.agent",
-        action: "gate.blocked",
-        detail: "BLOCKED — whole-dataset destruction with no recovery path. Sentinel refuses to apply.",
-        tone: "red",
-      });
-    } else {
-      await insertAuditEvent({
-        migrationRequestId: requestId,
-        actor: "sentinel.agent",
-        action: "gate.awaiting_approval",
-        detail: `Analysis complete (${report.classification.overallSeverity.toUpperCase()}). Paused for human approval.`,
-        tone: report.classification.overallSeverity === "green" ? "green" : "info",
-      });
+    // persistSafetyReport has ATOMICALLY armed the gate and set the request to
+    // awaiting_approval/blocked — that is the authoritative outcome. The gate
+    // audit event below is cosmetic, so it is BEST-EFFORT: a failure writing it
+    // must NOT fall into the outer catch and overwrite the armed status with
+    // 'failed', stranding a complete safety report under a terminal state.
+    try {
+      if (report.blocked) {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.agent",
+          action: "gate.blocked",
+          detail: "BLOCKED — whole-dataset destruction with no recovery path. Sentinel refuses to apply.",
+          tone: "red",
+        });
+      } else {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.agent",
+          action: "gate.awaiting_approval",
+          detail: `Analysis complete (${report.classification.overallSeverity.toUpperCase()}). Paused for human approval.`,
+          tone: report.classification.overallSeverity === "green" ? "green" : "info",
+        });
+      }
+    } catch (auditErr) {
+      console.error(`[agent] gate audit write failed for ${requestId} (report already persisted):`, auditErr);
     }
   } catch (e) {
     await setRequestStatus(requestId, "failed").catch(() => {});
