@@ -11,6 +11,10 @@ import { usePathname } from "next/navigation";
 const CARD_W = 348;
 const DIM = "rgba(6,10,18,0.74)";
 
+// In-memory guard: opened at most once per page load even if sessionStorage
+// throws (private mode). Reset naturally on a full reload / new session.
+let openedThisLoad = false;
+
 interface Step {
   target: string | null; // data-tour value, or null for a centered step
   title: string;
@@ -79,30 +83,29 @@ export function Walkthrough() {
   const step = STEPS[idx];
   const last = idx === STEPS.length - 1;
 
-  // Auto-open once per browser session on the dashboard (where the anchored
-  // elements exist). This covers both flows: after a login (which sets a
-  // per-navigation flag) and the no-login demo (first console visit). It does
-  // NOT re-open on ordinary navigation back to the dashboard within a session.
+  // Auto-open ONCE per browser session on the dashboard (where the anchored
+  // elements exist). It does not re-open on ordinary navigation back within a
+  // session. `openedThisLoad` (module scope) is an in-memory fallback so that if
+  // sessionStorage is unavailable (private mode), the tour still opens at most
+  // once per page load instead of on every dashboard mount.
   useEffect(() => {
     if (pathname !== "/dashboard") return;
+    if (openedThisLoad) return;
     let seen = false;
-    let fromLogin = false;
     try {
       seen = sessionStorage.getItem("ms_tour_seen") === "1";
-      fromLogin = sessionStorage.getItem("ms_tour_on_login") === "1";
-      if (fromLogin) sessionStorage.removeItem("ms_tour_on_login");
     } catch {
-      /* blocked storage → just don't auto-open */
+      seen = openedThisLoad; // storage blocked → rely on the in-memory guard
     }
-    if (!seen || fromLogin) {
-      try {
-        sessionStorage.setItem("ms_tour_seen", "1");
-      } catch {
-        /* ignore */
-      }
-      setIdx(0);
-      setOpen(true);
+    if (seen) return;
+    openedThisLoad = true;
+    try {
+      sessionStorage.setItem("ms_tour_seen", "1");
+    } catch {
+      /* in-memory guard already prevents a re-open this load */
     }
+    setIdx(0);
+    setOpen(true);
   }, [pathname]);
 
   const measure = useCallback(() => {

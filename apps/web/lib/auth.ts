@@ -38,12 +38,13 @@ function safeDecode(value: string): string | null {
   }
 }
 
-/** Demo-only: open the console without a login. OFF by default — set
- *  NEXT_PUBLIC_DEMO_OPEN_ACCESS=1 to let anyone reach the console as the single
- *  configured approver. NEVER enable this in a real deployment: it makes the
- *  approval gate reachable without credentials. */
+/** Demo-only: open the console without a login. OFF by default. This is a
+ *  SERVER-only, runtime env var (NOT NEXT_PUBLIC) so it is read from the
+ *  deployment's environment at request time — a build can never freeze open
+ *  access on, and unsetting it at runtime disables it immediately. NEVER enable
+ *  in a real deployment: it makes the approval gate reachable without credentials. */
 export function demoOpenAccess(): boolean {
-  return ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").trim().toLowerCase());
+  return ["1", "true", "yes"].includes((process.env.DEMO_OPEN_ACCESS ?? "").trim().toLowerCase());
 }
 
 /** Returns the authenticated approver, or null if the request has no valid session. */
