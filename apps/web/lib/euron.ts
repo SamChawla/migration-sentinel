@@ -43,7 +43,7 @@ export function euronConfigured(): boolean {
 }
 
 function baseUrl(): string {
-  return (process.env.EURON_BASE_URL?.trim() || "https://api.euron.one/api/v1").replace(/\/+$/, "");
+  return (process.env.EURON_BASE_URL?.trim() || "https://api.euron.one/api/v1/euri").replace(/\/+$/, "");
 }
 
 export function euronModel(): string {
