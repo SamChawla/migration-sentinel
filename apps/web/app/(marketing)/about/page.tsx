@@ -57,7 +57,7 @@ export default function About() {
             sessions, streaming turns, and a first-class <b style={{ color: "var(--text)" }}>tool-approval</b> loop.
             That loop <i>is</i> our human gate: the <span className="mono" style={{ color: "var(--cyan)" }}>apply_migration</span> tool
             is registered as approval-required, so the agent's turn physically pauses until an operator decides.
-            Blast · rollback · Qodo · pre-flight run as parallel sub-agents in the sandbox.
+            Blast · rollback · Qodo · pre-flight run as independent checks the agent orchestrates.
           </p>
         </div>
       </div>
