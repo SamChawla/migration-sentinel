@@ -32,12 +32,39 @@ export function RequestsTable({
   filterable = false,
   query = "",
   activeFilter = "all",
+  sort = "created_at",
+  dir = "desc",
 }: {
   records: RequestRecord[];
   filterable?: boolean;
   query?: string;
   activeFilter?: string;
+  sort?: string;
+  dir?: "asc" | "desc";
 }) {
+  // Clicking a sortable header toggles asc/desc (server-side, across all pages);
+  // switching columns starts at desc. Preserves search + status, resets to page 1.
+  function sortHref(col: string): string {
+    const sp = new URLSearchParams();
+    if (query) sp.set("q", query);
+    if (activeFilter && activeFilter !== "all") sp.set("status", activeFilter);
+    const nextDir = sort === col && dir === "desc" ? "asc" : "desc";
+    if (col !== "created_at") sp.set("sort", col);
+    if (nextDir !== "desc") sp.set("dir", nextDir);
+    const qs = sp.toString();
+    return qs ? `/requests?${qs}` : "/requests";
+  }
+  function SortTh({ col, label }: { col: string; label: string }) {
+    const active = sort === col;
+    return (
+      <th>
+        <Link href={sortHref(col)} className="th-sort" style={{ color: active ? "var(--text)" : "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+          {label}
+          <span style={{ fontSize: 9, color: active ? "var(--cyan)" : "var(--faint)" }}>{active ? (dir === "asc" ? "▲" : "▼") : "↕"}</span>
+        </Link>
+      </th>
+    );
+  }
   return (
     <>
       {filterable && (
@@ -63,12 +90,12 @@ export function RequestsTable({
         <table className="table">
           <thead>
             <tr>
-              <th>Migration</th>
-              <th>Target</th>
+              <SortTh col="title" label="Migration" />
+              <SortTh col="target" label="Target" />
               <th>Severity</th>
               <th>Rollback</th>
-              <th>Status</th>
-              <th>Age</th>
+              <SortTh col="status" label="Status" />
+              <SortTh col="created_at" label="Age" />
               <th></th>
             </tr>
           </thead>
