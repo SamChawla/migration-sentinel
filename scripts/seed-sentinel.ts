@@ -28,6 +28,15 @@ loadDotenv();
 
 const DATABASE_URL = process.env.DATABASE_URL ?? "postgres://postgres:postgres@localhost:5435/sentinel";
 
+/** Thrown INSIDE the seed transaction when the control plane already has data and
+ *  --reset was not passed. Throwing rolls the transaction back (nothing wiped). */
+class SeedGuardError extends Error {
+  constructor(public readonly count: number) {
+    super(`sentinel-db already has ${count} control-plane row(s); pass --reset to wipe.`);
+    this.name = "SeedGuardError";
+  }
+}
+
 async function main() {
   const pool = new Pool({ connectionString: DATABASE_URL });
   const db = drizzle(pool);
@@ -37,19 +46,28 @@ async function main() {
   // Guard: this seeder WIPES the control plane. Refuse to run against a DB that
   // already has data unless --reset is passed explicitly.
   const RESET = process.argv.includes("--reset");
-  const existing = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
-  if (existing[0].count > 0 && !RESET) {
-    console.error(
-      `✗ Refusing to seed: sentinel-db already has ${existing[0].count} migration requests. ` +
-        `Re-run with --reset to wipe and reseed the demo data.`,
-    );
-    await pool.end();
-    process.exit(1);
-  }
 
   // Everything below runs in ONE transaction — a mid-seed failure never leaves
   // the control plane half-cleared or half-populated.
   await db.transaction(async (tx) => {
+  // The occupancy check runs INSIDE this transaction, AFTER locking every table
+  // it may wipe. Otherwise (a) checking only migration_request would let it
+  // silently delete independent target/audit rows, and (b) a request committed
+  // between an outside-the-tx count and the deletes would be destroyed even
+  // without --reset. The ACCESS EXCLUSIVE lock blocks concurrent intake until we
+  // commit or roll back, so the check + deletes are atomic and race-free.
+  await tx.execute(sql`LOCK TABLE migration_request, target_database, audit_event IN ACCESS EXCLUSIVE MODE`);
+  const occ = await tx.execute(
+    sql`SELECT (SELECT count(*) FROM migration_request)
+             + (SELECT count(*) FROM target_database)
+             + (SELECT count(*) FROM audit_event) AS n`,
+  );
+  const existingRows = Number((occ.rows?.[0] as { n?: number | string } | undefined)?.n ?? 0);
+  if (existingRows > 0 && !RESET) {
+    // Throwing rolls the transaction back (no deletes) and releases the lock.
+    throw new SeedGuardError(existingRows);
+  }
+
   // Clear existing data (idempotent re-seed)
   console.log("→ Clearing existing demo data…");
   await tx.delete(auditEvent);
@@ -593,6 +611,14 @@ function redact(url: string): string {
 }
 
 main().catch((err) => {
+  if (err instanceof SeedGuardError) {
+    console.error(
+      `✗ Refusing to seed: sentinel-db already holds ${err.count} control-plane row(s) ` +
+        `(migration requests / target registrations / audit events). ` +
+        `Re-run with --reset to wipe and reseed the demo data.`,
+    );
+    process.exit(1);
+  }
   console.error("✗ Seed failed:", err.message);
   process.exit(1);
 });
