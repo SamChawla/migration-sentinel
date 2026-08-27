@@ -544,11 +544,12 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .where(eq(migrationRequest.id, requestId))
     .limit(1);
-  // Unknown request → null. Only fall back to the global URL for a request that
-  // resolves but whose target has no stored URL, never for a stale/invalid id
-  // (which must not silently connect to the default database).
+  // Unknown request → null. A resolved target with NO stored URL also returns
+  // null: with a multi-database picker, silently falling back to the global
+  // TARGET_DB_URL could run a migration/probe against the default (production)
+  // database rather than the alias the user selected.
   if (rows.length === 0) return null;
-  return rows[0].url ?? process.env.TARGET_DB_URL ?? null;
+  return rows[0].url ?? null;
 }
 
 export interface TargetDbRow {
@@ -565,27 +566,25 @@ export async function listTargetDatabases(): Promise<TargetDbRow[]> {
   return rows.map((r) => ({ id: r.id, name: r.name, alias: r.connectionAlias, hasUrl: Boolean(r.connectionUrl) }));
 }
 
-/** Add a connection (or update the URL of an existing alias). The caller is
+/** Add a NEW connection. Refuses to reuse an existing alias — overwriting a
+ *  shared target row's URL would retroactively reroute every request that
+ *  already references it (including pending/approved migrations). Returns
+ *  { ok:false } on a duplicate alias so the caller can 409. The caller is
  *  responsible for having tested connectivity first. */
-export async function upsertTargetDatabase(input: { alias: string; url: string }): Promise<TargetDbRow> {
+export async function addTargetConnection(
+  input: { alias: string; url: string },
+): Promise<{ ok: true; row: TargetDbRow } | { ok: false; reason: "duplicate" }> {
   const existing = await db
-    .select()
+    .select({ id: targetDatabase.id })
     .from(targetDatabase)
     .where(eq(targetDatabase.connectionAlias, input.alias))
     .limit(1);
-  if (existing.length > 0) {
-    const [row] = await db
-      .update(targetDatabase)
-      .set({ connectionUrl: input.url })
-      .where(eq(targetDatabase.id, existing[0].id))
-      .returning();
-    return { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true };
-  }
+  if (existing.length > 0) return { ok: false, reason: "duplicate" };
   const [row] = await db
     .insert(targetDatabase)
     .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: input.url })
     .returning();
-  return { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true };
+  return { ok: true, row: { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true } };
 }
 
 export interface IntakeRow {

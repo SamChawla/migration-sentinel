@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface Conn {
   id: string;
@@ -19,14 +19,24 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
   const [url, setUrl] = useState("");
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
+  // Track load + error state separately from the array so a failed fetch is not
+  // silently shown as an empty configuration ("No matches").
+  const loadConns = useCallback(() => {
+    setLoadError(null);
     fetch("/api/connections")
-      .then((r) => (r.ok ? r.json() : { connections: [] }))
-      .then((d) => setConns(d.connections ?? []))
-      .catch(() => setConns([]));
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Server returned ${r.status}`);
+        return r.json();
+      })
+      .then((d) => { setConns(d.connections ?? []); setLoaded(true); })
+      .catch((e) => { setLoadError(e instanceof Error ? e.message : "Could not load connections."); setLoaded(true); });
   }, []);
+
+  useEffect(() => { loadConns(); }, [loadConns]);
 
   useEffect(() => {
     function away(e: MouseEvent) {
@@ -78,7 +88,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
         onClick={() => setOpen((o) => !o)}
         style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
       >
-        <span style={{ width: 7, height: 7, borderRadius: "50%", background: selected?.hasUrl ? "var(--safe)" : "var(--faint)", flexShrink: 0 }} />
+        <span title={selected?.hasUrl ? "Connection configured (URL stored)" : "No stored URL"} style={{ width: 7, height: 7, borderRadius: "50%", background: selected?.hasUrl ? "var(--cyan)" : "var(--faint)", flexShrink: 0 }} />
         <span style={{ color: value ? "var(--text)" : "var(--faint)" }}>{value || "Select a target database…"}</span>
         <span style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 12 }}>▾</span>
       </button>
@@ -110,14 +120,25 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                       color: "var(--text-dim)", cursor: "pointer", textAlign: "left", fontSize: 13,
                     }}
                   >
-                    <span style={{ width: 7, height: 7, borderRadius: "50%", background: c.hasUrl ? "var(--safe)" : "var(--faint)" }} />
+                    {/* Dot = whether a URL is CONFIGURED (not a live reachability check). */}
+                    <span
+                      title={c.hasUrl ? "Connection configured (URL stored)" : "Seeded alias — no stored URL"}
+                      style={{ width: 7, height: 7, borderRadius: "50%", background: c.hasUrl ? "var(--cyan)" : "var(--faint)" }}
+                    />
                     <span className="mono">{c.alias}</span>
-                    {!c.hasUrl && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>seeded</span>}
+                    {!c.hasUrl && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>no url</span>}
                   </button>
                 ))}
-                {filtered.length === 0 && (
+                {loadError ? (
+                  <div style={{ padding: "10px", fontSize: 12 }}>
+                    <div className="inline-error" role="alert" style={{ marginBottom: 6 }}>Couldn&apos;t load connections: {loadError}</div>
+                    <button type="button" className="btn btn-sm" onClick={loadConns}>Retry</button>
+                  </div>
+                ) : !loaded ? (
+                  <div style={{ padding: "10px", fontSize: 12, color: "var(--faint)" }}>Loading…</div>
+                ) : filtered.length === 0 ? (
                   <div style={{ padding: "10px", fontSize: 12, color: "var(--faint)" }}>No matches.</div>
-                )}
+                ) : null}
               </div>
               <button
                 type="button"
