@@ -74,10 +74,17 @@ export function DeckShell({
             <img src="/brand/emblem.png" alt="" style={{ display: "block", height: 24, width: "auto" }} />
             <span>Migration <span className="mk-logo-accent">Sentinel</span></span>
           </Link>
+          <Link href="/" className="btn btn-sm" title="Go to the product homepage" style={{ padding: "5px 12px" }}>
+            ⌂ Home
+          </Link>
           <span className="hud-page" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--faint)", letterSpacing: ".1em" }}>{pageName(pathname)}</span>
           <span className={`hud-status${statusIdle ? " idle" : ""}`}>
             {!statusIdle && <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: "50%", background: "var(--hold)", marginRight: 8, animation: "pulse 1.7s ease-in-out infinite" }} />}
             {statusText}
+          </span>
+          <span title="Signed in" style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-dim)", whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 7 }}>
+            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--safe)", boxShadow: "0 0 6px var(--safe)" }} />
+            {userName} · Approver
           </span>
           <span className="hud-env">
             TARGET · prod-orders-db
@@ -110,7 +117,7 @@ export function DeckShell({
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>demo session</div>
                 </div>
                 <Link href="/settings" className="menu-item" onClick={() => setMenuOpen(false)}>Settings</Link>
-                <Link href="/" className="menu-item" onClick={() => setMenuOpen(false)}>Product page</Link>
+                <Link href="/" className="menu-item" onClick={() => setMenuOpen(false)}>Home</Link>
                 <Link href="/demo" className="menu-item" onClick={() => setMenuOpen(false)}>Demo mode</Link>
                 <div className="menu-sep" />
                 <button className="menu-item" style={{ color: "var(--danger)" }} onClick={() => void signOut()}>Sign out</button>
