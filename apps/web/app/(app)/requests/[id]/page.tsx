@@ -8,7 +8,7 @@ import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readout
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
 import { MigrationChat } from "@/components/console/MigrationChat";
-import { Db3D } from "@/components/scene/Db3D";
+import { SchemaErd, type SceneTable, type FkEdge } from "@/components/scene/SchemaErd";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
@@ -184,6 +184,38 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   return { table, columns };
 }
 
+// Foreign-key edges of the demo schema (fixtures/target_schema.sql). Drives the
+// "affected table + FK neighbours" view.
+const SCHEMA_FKS: FkEdge[] = [
+  { fromTable: "public.orders", fromCol: "user_id", toTable: "public.users", toCol: "id" },
+];
+
+/** Expand the single-table model into the affected table PLUS its FK-neighbour
+ *  tables + the edges between them, so the 3D shows how the change is linked. */
+function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
+  const primary = db3dModel(upSql);
+  const primaryName = primary.table; // e.g. "public.users"
+  // If the parse couldn't attribute columns but the table IS a known fixture,
+  // still show its columns (so the card isn't empty and FK links can anchor).
+  let primaryCols = primary.columns;
+  if (primaryCols.length === 0) {
+    const key = primaryName.replace(/^public\./, "") as keyof typeof DEMO_TABLES;
+    if (DEMO_TABLES[key]) primaryCols = DEMO_TABLES[key].map((c) => ({ ...c, affected: "none" as Affected }));
+  }
+  const tables: SceneTable[] = [{ name: primaryName, columns: primaryCols, role: "primary" }];
+
+  const edges = SCHEMA_FKS.filter((e) => e.fromTable === primaryName || e.toTable === primaryName);
+  const neighbours = new Set<string>();
+  for (const e of edges) neighbours.add(e.fromTable === primaryName ? e.toTable : e.fromTable);
+
+  for (const name of neighbours) {
+    const key = name.replace(/^public\./, "");
+    const cols = DEMO_TABLES[key as keyof typeof DEMO_TABLES];
+    if (cols) tables.push({ name, columns: cols.map((c) => ({ ...c, affected: "none" as Affected })), role: "related" });
+  }
+  return { tables, edges };
+}
+
 export default async function ApprovalConsole({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const r = await getRequest(id);
@@ -204,7 +236,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   const blocked = disposition === "blocked";
   const decidable = r.status === "awaiting_approval" || r.status === "blocked";
   const paused = decidable;
-  const scene = db3dModel(r.upSql);
+  const scene = db3dScene(r.upSql);
 
   // Whether the safety pipeline has actually produced a verdict yet. getRequest()
   // substitutes overallSeverity='green' when no blast report exists, so a freshly
@@ -271,7 +303,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 3D Database */}
           <div className="glass glass-energized" style={{ padding: 0 }}>
-            <Db3D table={scene.table} columns={scene.columns} />
+            <SchemaErd tables={scene.tables} edges={scene.edges} />
           </div>
 
           {/* SQL wells */}
