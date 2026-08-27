@@ -1,14 +1,18 @@
 "use client";
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, redirect } from "next/navigation";
 import Link from "next/link";
 
 // Demo convenience: when NEXT_PUBLIC_DEMO_TOKEN is set (local / the demo deploy),
 // the approver token is pre-filled so the console is one click away. Unset in
 // production → the field stays blank and login is a normal secure sign-in.
 const DEMO_TOKEN = process.env.NEXT_PUBLIC_DEMO_TOKEN ?? "";
+// When open access is on there is no login step — bounce straight to the console
+// so any "Open console" link (from /demo, /about, …) just works.
+const OPEN_ACCESS = ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").toLowerCase());
 
 export default function Login() {
+  if (OPEN_ACCESS) redirect("/dashboard");
   const router = useRouter();
   const demoMode = DEMO_TOKEN.length > 0;
   const [username, setUsername] = useState("approver");
