@@ -22,8 +22,21 @@ async function probeDb(url: string | undefined): Promise<boolean> {
   }
 }
 
+/** Liveness probe for an HTTP service (the TrueForge harness). ANY response —
+ *  even a 404 — means the harness is reachable; only a network error/timeout is
+ *  "down". Replaces the old hardcoded "configure key" placeholder. */
+async function probeHttp(url: string | undefined): Promise<boolean> {
+  if (!url) return false;
+  try {
+    await fetch(url, { method: "GET", signal: AbortSignal.timeout(1500) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export default async function Dashboard() {
-  const [requests, audit, stats, sevDist, targetUp, shadowUp, sentinelUp] = await Promise.all([
+  const [requests, audit, stats, sevDist, targetUp, shadowUp, sentinelUp, trueforgeUp] = await Promise.all([
     // Only the 5 most recent are rendered below — ask for 5, not the default 50.
     // Each record is hydrated with several sequential queries, so fetching 50 to
     // show 5 was ~10x the database work per dashboard load.
@@ -34,7 +47,9 @@ export default async function Dashboard() {
     probeDb(process.env.TARGET_DB_URL),
     probeDb(process.env.SHADOW_ADMIN_URL),
     probeDb(process.env.DATABASE_URL),
+    probeHttp(process.env.TRUEFORGE_BASE_URL ?? "http://localhost:8790"),
   ]);
+  const copilotUp = Boolean(process.env.EURON_API_KEY?.trim());
   const dot = (up: boolean) => (up ? "ok" : "off");
 
   return (
@@ -114,7 +129,8 @@ export default async function Dashboard() {
             <div className="health-row"><span className={`pulse-dot-live ${dot(targetUp)}`} /> <span>target-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{targetUp ? ":5433 read-only" : "unreachable"}</span></div>
             <div className="health-row"><span className={`pulse-dot-live ${dot(shadowUp)}`} /> <span>shadow-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{shadowUp ? ":5434 ephemeral" : "unreachable"}</span></div>
             <div className="health-row"><span className={`pulse-dot-live ${dot(sentinelUp)}`} /> <span>sentinel-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{sentinelUp ? ":5435 control" : "unreachable"}</span></div>
-            <div className="health-row"><span className="pulse-dot-live warn" /> <span>TrueForge</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>configure key</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${dot(trueforgeUp)}`} /> <span>TrueForge</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{trueforgeUp ? "agent harness · live" : "unreachable"}</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${copilotUp ? "ok" : "off"}`} /> <span>Copilot</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{copilotUp ? "Euron · BYOK" : "configure key"}</span></div>
             <div className="health-row"><span className="pulse-dot-live off" /> <span>Qodo</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>advisory</span></div>
           </div>
 

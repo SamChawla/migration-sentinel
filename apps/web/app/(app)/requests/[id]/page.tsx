@@ -7,6 +7,7 @@ import { SeverityChip, StatusChip } from "@/components/chips";
 import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readouts";
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
+import { MigrationChat } from "@/components/console/MigrationChat";
 import { Db3D } from "@/components/scene/Db3D";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
@@ -217,17 +218,33 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
     <>
       <AutoRefresh status={r.status} />
       <Link href="/requests" style={{ fontSize: 12, color: "var(--muted)" }}>← All migrations</Link>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "8px 0 14px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "8px 0 10px" }}>
         <h1 style={{ margin: 0 }}>{r.title}</h1>
         <StatusChip status={r.status} />
+      </div>
+
+      {/* Engine attribution — TrueForge runs the agent; this console is the cockpit. */}
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 9, margin: "0 0 14px",
+          fontSize: 11.5, color: "var(--muted)", fontFamily: "var(--font-mono)",
+          border: "1px solid var(--line)", borderRadius: 10, padding: "8px 12px",
+          background: "var(--panel)",
+        }}
+      >
+        <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--cyan)", boxShadow: "var(--glow-cyan)", flexShrink: 0 }} />
+        <span>
+          Runs on <b style={{ color: "var(--cyan)" }}>TrueForge</b> — the agent turn generates the migration, then{" "}
+          <b style={{ color: "var(--text-dim)" }}>blast · rollback · qodo · pre-flight</b> run as parallel sub-agents. This console is the approval cockpit built on its SDK.
+        </span>
       </div>
 
       {paused && (
         <div className="paused-banner" style={{ marginBottom: 14, ...(blocked ? { borderColor: "var(--danger)" } : {}) }}>
           <span className="pulse-dot" />
           {blocked
-            ? "Agent halted — migration BLOCKED. No production changes have been made."
-            : "Agent paused — awaiting operator decision. No production changes have been made."}
+            ? "TrueForge halted the agent — migration BLOCKED at the apply_migration approval gate. No production changes have been made."
+            : "TrueForge paused the agent at the apply_migration approval gate — awaiting your decision. No production changes have been made."}
         </div>
       )}
 
@@ -271,6 +288,10 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
 
           {/* Energy progress bar */}
           <div className="glass" style={{ padding: "12px 16px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span className="hud-label" style={{ margin: 0 }}>Agent run</span>
+              <span className="mono" style={{ fontSize: 10, color: "var(--faint)", letterSpacing: ".06em" }}>⚡ TrueForge session</span>
+            </div>
             <EnergyProgressBar phases={PHASES} currentIndex={phaseIndex(r)} percent={phasePercent(r)} />
           </div>
 
@@ -402,6 +423,11 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
           </div>
         </div>
       </div>
+
+      {/* Read-only copilot — ask questions about THIS migration. Powered by the
+          operator's Euron key (BYOK, OpenAI-compatible); wholly separate from
+          the approval gate. */}
+      <MigrationChat requestId={r.id} />
     </>
   );
 }
