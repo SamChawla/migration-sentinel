@@ -61,7 +61,23 @@ export default async function Dashboard() {
             Every schema change: analyzed, dry-run on a shadow, and gated on you.
           </p>
         </div>
-        <Link href="/requests/new" className="btn btn-cyan" data-tour="new">+ New migration</Link>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }} data-tour="search">
+          {/* Native GET form → reuses the server-side search on /requests. */}
+          <form action="/requests" method="get" role="search" style={{ position: "relative", display: "flex", alignItems: "center" }}>
+            <span aria-hidden style={{ position: "absolute", left: 11, fontSize: 13, color: "var(--faint)", pointerEvents: "none" }}>⌕</span>
+            <input
+              type="search"
+              name="q"
+              placeholder="Search migrations…"
+              aria-label="Search migrations"
+              style={{
+                width: 230, fontSize: 13, padding: "8px 12px 8px 30px", borderRadius: 9,
+                background: "var(--panel-2)", border: "1px solid var(--line-strong)", color: "var(--text)",
+              }}
+            />
+          </form>
+          <Link href="/requests/new" className="btn btn-cyan" data-tour="new">+ New migration</Link>
+        </div>
       </div>
 
       {/* Stat readouts */}
