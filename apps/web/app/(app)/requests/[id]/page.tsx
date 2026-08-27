@@ -14,22 +14,31 @@ export const dynamic = "force-dynamic";
 
 const PHASES = ["Generate", "Review", "Dry-run", "Gate", "Apply"];
 
-function phaseIndex(status: string): number {
-  switch (status) {
+type PhaseRecord = { status: string; findings: unknown[]; upSql?: string };
+
+function phaseIndex(r: PhaseRecord): number {
+  switch (r.status) {
     case "received": case "generating": return 0;
     case "reviewing": return 1;
     case "dry_running": return 2;
     case "awaiting_approval": case "approved": case "rejected": case "blocked": return 3;
-    case "applying": return 4;
-    case "applied": case "failed": case "rolled_back": return 4;
+    case "applying": case "applied": case "rolled_back": return 4;
+    case "failed":
+      // A failure can happen at ANY phase — infer the furthest one reached from
+      // persisted evidence so an early (config/generate/review/dry-run) failure
+      // isn't shown as a completed Apply. Never claim more progress than we have.
+      if (r.findings.length > 0) return 3;          // analysis produced a report
+      if (r.upSql && r.upSql.trim()) return 1;      // generated, but no analysis
+      return 0;                                     // failed at/ before generate
     default: return 0;
   }
 }
 
-function phasePercent(status: string): number {
-  const i = phaseIndex(status);
-  const terminal = ["applied", "failed", "rolled_back"].includes(status);
-  if (terminal) return 100;
+function phasePercent(r: PhaseRecord): number {
+  const i = phaseIndex(r);
+  // Only a genuinely COMPLETED terminal run is 100%. A 'failed' run stopped at
+  // its reached phase, so it must NOT render as fully complete.
+  if (r.status === "applied" || r.status === "rolled_back") return 100;
   return ((i + 0.5) / PHASES.length) * 100;
 }
 
@@ -64,20 +73,28 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
   ],
 };
 
-/** Derive the table + columns + operation highlight the 3D should show from
- *  the migration SQL. Always returns a labeled table (never an empty stack). */
+/** Derive the table + columns + operation highlight the 3D should show from the
+ *  migration SQL. Uses the REAL parsed table name; borrows fixture columns only
+ *  for tables we have a fixture for, otherwise shows only the columns the
+ *  migration touches (rather than fabricating an unrelated schema). */
 function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   const sql = upSql.toLowerCase();
 
-  let key: keyof typeof DEMO_TABLES = "users";
   const tableMatch =
     sql.match(/(?:drop|alter|truncate)\s+table\s+(?:only\s+)?(?:public\.)?(\w+)/) ||
     sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
     sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
-  if (tableMatch && tableMatch[1] in DEMO_TABLES) key = tableMatch[1] as keyof typeof DEMO_TABLES;
+  const parsed = tableMatch?.[1];
+  const known = parsed && parsed in DEMO_TABLES;
 
-  const table = `public.${key}`;
-  let columns: SceneCol[] = DEMO_TABLES[key].map((c) => ({ ...c, affected: "none" }));
+  // Use the REAL parsed table name. Only borrow the fixture COLUMNS when the table
+  // is one we actually have a fixture for — otherwise start EMPTY so a migration
+  // against an unknown table isn't fabricated as public.users with unrelated
+  // columns (the op-specific logic below still highlights the columns it touches).
+  const table = `public.${parsed ?? "users"}`;
+  let columns: SceneCol[] = known
+    ? DEMO_TABLES[parsed as keyof typeof DEMO_TABLES].map((c) => ({ ...c, affected: "none" }))
+    : [];
   const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
     columns.map((c) => ({ ...c, affected, severity, opLabel }));
 
@@ -254,7 +271,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
 
           {/* Energy progress bar */}
           <div className="glass" style={{ padding: "12px 16px" }}>
-            <EnergyProgressBar phases={PHASES} currentIndex={phaseIndex(r.status)} percent={phasePercent(r.status)} />
+            <EnergyProgressBar phases={PHASES} currentIndex={phaseIndex(r)} percent={phasePercent(r)} />
           </div>
 
           {/* Commit console */}

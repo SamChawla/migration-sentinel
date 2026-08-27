@@ -3,7 +3,7 @@
  * the control-plane database as the pipeline advances, and closes when the
  * request reaches a terminal state, on client disconnect, or a safety timeout.
  */
-import { getRequest, listAuditEventsForRequest } from "@sentinel/db/queries";
+import { getRequest, listAuditEventsForRequestSince } from "@sentinel/db/queries";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -52,7 +52,10 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
       req.signal.addEventListener("abort", stop);
 
       let lastStatus: string | null = null;
-      const seenAudit = new Set<string>();
+      // Forward cursor over (created_at, id). Paging forward from it DRAINS a
+      // burst of >1 page between polls, instead of a newest-N window silently
+      // dropping the older events of that burst.
+      let cursor: { at: string; id: string } | null = null;
       const startedAt = Date.now();
       const MAX_MS = 5 * 60 * 1000;
 
@@ -69,13 +72,15 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
             lastStatus = rec.status;
             send("status", { status: rec.status });
           }
-          // Targeted, bounded query — never scans the whole audit table per tick.
-          const events = await listAuditEventsForRequest(id, 50);
-          for (const e of events.reverse()) {
-            if (!seenAudit.has(e.id)) {
-              seenAudit.add(e.id);
+          // Drain forward from the cursor in bounded pages until caught up.
+          for (;;) {
+            const batch = await listAuditEventsForRequestSince(id, cursor, 100);
+            if (batch.length === 0) break;
+            for (const e of batch) {
               send("audit", { at: e.at, action: e.action, detail: e.detail, tone: e.tone });
+              cursor = { at: e.at, id: e.id };
             }
+            if (batch.length < 100 || closed) break;
           }
           if (TERMINAL.has(rec.status) || rec.status === "blocked" || Date.now() - startedAt > MAX_MS) {
             stop();

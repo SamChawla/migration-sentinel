@@ -147,74 +147,72 @@ export async function listRequests(
     .limit(limit)
     .offset(offset);
 
-  const records: RequestRecord[] = [];
-
-  for (const row of rows) {
+  // Hydrate rows CONCURRENTLY (Promise.all over rows), and within each row run
+  // the independent lookups in parallel — otherwise 50 rows × ~5 sequential
+  // queries was ~250 serialized round trips. Depth is now O(3) regardless of page
+  // size: {artifact, shadow} ‖ then {qodo, blast, preflight} ‖ then findings.
+  const records: RequestRecord[] = await Promise.all(
+    rows.map(async (row): Promise<RequestRecord> => {
     const req = row.migration_request;
     const target = row.target_database;
     const appr = row.approval;
 
-    const artifact = await db
-      .select()
-      .from(generatedArtifact)
-      .where(eq(generatedArtifact.migrationRequestId, req.id))
-      .orderBy(desc(generatedArtifact.version))
-      .limit(1)
-      .then((r) => r[0] ?? null);
-
-    let qodoRow: typeof qodoReview.$inferSelect | null = null;
-    if (artifact) {
-      qodoRow = await db
+    const [artifact, shadow] = await Promise.all([
+      db
         .select()
-        .from(qodoReview)
-        .where(eq(qodoReview.generatedArtifactId, artifact.id))
-        .orderBy(desc(qodoReview.createdAt))
+        .from(generatedArtifact)
+        .where(eq(generatedArtifact.migrationRequestId, req.id))
+        .orderBy(desc(generatedArtifact.version))
         .limit(1)
-        .then((r) => r[0] ?? null);
-    }
+        .then((r) => r[0] ?? null),
+      db
+        .select()
+        .from(shadowRun)
+        .where(eq(shadowRun.migrationRequestId, req.id))
+        .orderBy(desc(shadowRun.createdAt))
+        .limit(1)
+        .then((r) => r[0] ?? null),
+    ]);
 
-    const shadow = await db
-      .select()
-      .from(shadowRun)
-      .where(eq(shadowRun.migrationRequestId, req.id))
-      .orderBy(desc(shadowRun.createdAt))
-      .limit(1)
-      .then((r) => r[0] ?? null);
+    const [qodoRow, blast, preflights] = await Promise.all([
+      artifact
+        ? db
+            .select()
+            .from(qodoReview)
+            .where(eq(qodoReview.generatedArtifactId, artifact.id))
+            .orderBy(desc(qodoReview.createdAt))
+            .limit(1)
+            .then((r) => r[0] ?? null)
+        : Promise.resolve(null),
+      shadow
+        ? db
+            .select()
+            .from(blastReport)
+            .where(eq(blastReport.shadowRunId, shadow.id))
+            .limit(1)
+            .then((r) => r[0] ?? null)
+        : Promise.resolve(null),
+      shadow
+        ? db.select().from(preflightResult).where(eq(preflightResult.shadowRunId, shadow.id))
+        : Promise.resolve([] as (typeof preflightResult.$inferSelect)[]),
+    ]);
 
-    let blast: typeof blastReport.$inferSelect | null = null;
     let findings: FindingRow[] = [];
-    if (shadow) {
-      blast = await db
+    if (blast) {
+      const rawFindings = await db
         .select()
-        .from(blastReport)
-        .where(eq(blastReport.shadowRunId, shadow.id))
-        .limit(1)
-        .then((r) => r[0] ?? null);
-
-      if (blast) {
-        const rawFindings = await db
-          .select()
-          .from(blastFinding)
-          .where(eq(blastFinding.blastReportId, blast.id))
-          .orderBy(blastFinding.statementIndex);
-
-        findings = rawFindings.map((f) => ({
-          statement: f.statementSql,
-          severity: f.severity as Severity,
-          lockType: f.lockType,
-          note: f.note,
-        }));
-      }
+        .from(blastFinding)
+        .where(eq(blastFinding.blastReportId, blast.id))
+        .orderBy(blastFinding.statementIndex);
+      findings = rawFindings.map((f) => ({
+        statement: f.statementSql,
+        severity: f.severity as Severity,
+        lockType: f.lockType,
+        note: f.note,
+      }));
     }
 
-    const preflights = shadow
-      ? await db
-          .select()
-          .from(preflightResult)
-          .where(eq(preflightResult.shadowRunId, shadow.id))
-      : [];
-
-    records.push({
+    return {
       id: req.id,
       title: req.title,
       targetDb: target?.connectionAlias ?? target?.name ?? "unknown",
@@ -246,8 +244,9 @@ export async function listRequests(
         requiresTypedConfirm: appr?.requiresTypedConfirm ?? false,
         expectedConfirm: appr?.expectedConfirmValue ?? null,
       },
-    });
-  }
+    };
+    }),
+  );
 
   return records;
 }
@@ -901,6 +900,30 @@ export async function listAuditEventsForRequest(requestId: string, limit = 50): 
     .where(eq(auditEvent.migrationRequestId, requestId))
     .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
     .limit(Math.min(Math.max(limit, 1), 200));
+  return rows.map(toAuditRow);
+}
+
+/** Audit events for ONE request STRICTLY AFTER a (created_at, id) cursor, in
+ *  ASCENDING order. The SSE poller pages forward through this so a burst of more
+ *  than one page between polls is fully drained rather than losing the older
+ *  events that fall outside a newest-N window. */
+export async function listAuditEventsForRequestSince(
+  requestId: string,
+  since: { at: string; id: string } | null,
+  limit = 100,
+): Promise<AuditEventRow[]> {
+  const conds = [eq(auditEvent.migrationRequestId, requestId)];
+  if (since) {
+    conds.push(
+      sql`(${auditEvent.createdAt}, ${auditEvent.id}) > (${since.at}::timestamptz, ${since.id}::uuid)`,
+    );
+  }
+  const rows = await db
+    .select()
+    .from(auditEvent)
+    .where(and(...conds))
+    .orderBy(auditEvent.createdAt, auditEvent.id) // ascending — forward cursor
+    .limit(Math.min(Math.max(limit, 1), 500));
   return rows.map(toAuditRow);
 }
 
