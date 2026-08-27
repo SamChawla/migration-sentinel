@@ -55,9 +55,12 @@ async function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () => Promi
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      Promise.resolve(onTimeout())
-        .catch(() => {})
-        .finally(() => reject(new Error(`shadow dry-run exceeded ${ms}ms budget — aborted`)));
+      // Reject IMMEDIATELY when the budget expires — do NOT await onTimeout()
+      // first, or an unbounded teardown (admin connect / cleanup queries) could
+      // block and the wall-clock deadline would never actually fire. Abort the
+      // underlying work best-effort in the background.
+      reject(new Error(`shadow dry-run exceeded ${ms}ms budget — aborted`));
+      Promise.resolve(onTimeout()).catch(() => {});
     }, ms);
   });
   try {

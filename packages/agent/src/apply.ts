@@ -53,6 +53,9 @@ export function isNonTransactional(upSql: string): boolean {
     return (
       /\b(VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(c) ||
       /\bALTER\s+DATABASE\b[\s\S]*\bSET\s+TABLESPACE\b/i.test(c) ||
+      // ALTER SUBSCRIPTION ... REFRESH PUBLICATION / SET PUBLICATION (which
+      // refreshes by default) cannot run inside a transaction block.
+      /\bALTER\s+SUBSCRIPTION\b[\s\S]*\b(?:REFRESH\s+PUBLICATION|SET\s+PUBLICATION)\b/i.test(c) ||
       /\bINDEX\s+CONCURRENTLY\b/i.test(c) ||
       /\bREINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
       /\bREFRESH\s+MATERIALIZED\s+VIEW\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
@@ -75,6 +78,13 @@ export function findExecutorSubversion(upSql: string): string | null {
     // NOTE: SET CONSTRAINTS is intentionally NOT here — it only changes the
     // timing of deferrable constraint checks WITHIN the executor's transaction;
     // it neither commits nor escapes it, so it's a legitimate migration statement.
+    // Two-phase-commit control FIRST (before the general COMMIT/ROLLBACK check):
+    // PREPARE TRANSACTION ends the executor-owned transaction while keeping its
+    // changes+locks; COMMIT/ROLLBACK PREPARED act on a 2PC gid. All subvert the
+    // executor's atomic wrapper. (Plain `PREPARE stmt AS …` is a prepared
+    // STATEMENT, not transaction control, so it is deliberately not matched.)
+    if (/^(PREPARE\s+TRANSACTION|COMMIT\s+PREPARED|ROLLBACK\s+PREPARED)\b/i.test(c))
+      return `two-phase-commit control ("${stmt.slice(0, 40)}") — the executor owns the transaction`;
     if (/^(BEGIN|START\s+TRANSACTION|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE\s+SAVEPOINT|ABORT)\b/i.test(c))
       return `transaction-control statement ("${stmt.slice(0, 40)}") — the executor owns the transaction`;
     if (/^SET\s+(?:SESSION\s+|LOCAL\s+)?(?:statement_timeout|lock_timeout|idle_in_transaction_session_timeout)\b/i.test(c))

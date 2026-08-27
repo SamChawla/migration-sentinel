@@ -42,6 +42,13 @@ describe("isNonTransactional — autocommit detection (R5 #4)", () => {
     expect(isNonTransactional("ALTER TABLE t SET TABLESPACE fast_ssd")).toBe(false);
   });
 
+  it("detects ALTER SUBSCRIPTION ... REFRESH/SET PUBLICATION as autocommit-only (R12 #1)", () => {
+    expect(isNonTransactional("ALTER SUBSCRIPTION s REFRESH PUBLICATION")).toBe(true);
+    expect(isNonTransactional("ALTER SUBSCRIPTION s SET PUBLICATION p1, p2")).toBe(true);
+    // ENABLE/DISABLE are transactional
+    expect(isNonTransactional("ALTER SUBSCRIPTION s DISABLE")).toBe(false);
+  });
+
   it("treats ALTER TYPE ... ADD VALUE as transactional in PG12+ (R6 #3)", () => {
     // No longer forced to autocommit — running it in the executor's txn lets a
     // later failure roll back atomically instead of leaving the enum value.
@@ -77,6 +84,14 @@ describe("findExecutorSubversion — guarded-apply contract (R6 #1/#2)", () => {
 
   it("does NOT flag SET CONSTRAINTS — it stays within the executor txn (R7 #1)", () => {
     expect(findExecutorSubversion("SET CONSTRAINTS ALL DEFERRED; UPDATE t SET x = 1 WHERE id = 1;")).toBeNull();
+  });
+
+  it("flags PREPARE TRANSACTION / COMMIT PREPARED / ROLLBACK PREPARED (R12 #4)", () => {
+    expect(findExecutorSubversion("PREPARE TRANSACTION 'gid1'")).toMatch(/two-phase-commit/);
+    expect(findExecutorSubversion("COMMIT PREPARED 'gid1'")).toMatch(/two-phase-commit/);
+    expect(findExecutorSubversion("ROLLBACK PREPARED 'gid1'")).toMatch(/two-phase-commit/);
+    // a plain prepared STATEMENT is not transaction control
+    expect(findExecutorSubversion("PREPARE p AS SELECT 1")).toBeNull();
   });
 
   it("does NOT flag COMMIT appearing in a comment or string", () => {

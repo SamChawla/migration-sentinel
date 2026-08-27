@@ -94,35 +94,47 @@ function buildPrompt(input: QodoReviewInput): string {
  *  (the final verdict follows any reasoning), tracking string state so braces
  *  inside a JSON string value don't skew the depth count. */
 export function extractJson(text: string): unknown | null {
+  // Collect every top-level {...} object, then try them LAST-to-first (the qodo
+  // verdict is the final object). Crucially, string state is tracked ONLY while
+  // inside an object (depth > 0): an unmatched quote in a CLI warning or log line
+  // that precedes the JSON must NOT flip us into "string mode" and cause the
+  // verdict object to be skipped.
+  const candidates: string[] = [];
   let depth = 0;
   let inStr = false;
   let esc = false;
   let start = -1;
-  let last: string | null = null;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
+    if (depth === 0) {
+      // Outside any object, only an opening brace matters — ignore log quotes.
+      if (ch === "{") {
+        start = i;
+        depth = 1;
+      }
+      continue;
+    }
     if (inStr) {
       if (esc) esc = false;
       else if (ch === "\\") esc = true;
       else if (ch === '"') inStr = false;
       continue;
     }
-    if (ch === '"') {
-      inStr = true;
-    } else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth++;
-    } else if (ch === "}" && depth > 0) {
+    if (ch === '"') inStr = true;
+    else if (ch === "{") depth++;
+    else if (ch === "}") {
       depth--;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
+      if (depth === 0 && start !== -1) candidates.push(text.slice(start, i + 1));
     }
   }
-  if (last === null) return null;
-  try {
-    return JSON.parse(last);
-  } catch {
-    return null;
+  for (let j = candidates.length - 1; j >= 0; j--) {
+    try {
+      return JSON.parse(candidates[j]);
+    } catch {
+      /* try the previous candidate */
+    }
   }
+  return null;
 }
 
 export function normalizeVerdict(v: unknown): QodoVerdict {

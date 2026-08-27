@@ -26,6 +26,18 @@ describe("extractJson", () => {
     const out = 'reasoning… {"verdict":"failed","summary":"has { and } in it"}';
     expect(extractJson(out)).toEqual({ verdict: "failed", summary: "has { and } in it" });
   });
+
+  it("is not confused by an unmatched quote in preceding log text (R12 #3)", () => {
+    // A stray apostrophe/quote in a warning before the JSON must not flip the
+    // parser into 'string mode' and skip the verdict object.
+    const out = `Warning: couldn't parse "foo — retrying\n{"verdict":"passed","findings":[]}`;
+    expect(extractJson(out)).toEqual({ verdict: "passed", findings: [] });
+  });
+
+  it("falls back to an earlier object if the last one isn't valid JSON (R12 #3)", () => {
+    const out = '{"verdict":"failed"} trailing {not json}';
+    expect(extractJson(out)).toEqual({ verdict: "failed" });
+  });
 });
 
 describe("normalizeVerdict", () => {
