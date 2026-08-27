@@ -18,10 +18,29 @@ export function loadDotenv(path = ".env"): void {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
     throw e;
   }
-  for (const line of contents.split(/\r?\n/)) {
-    const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
-    if (m && !(m[1] in process.env)) {
-      process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  for (const raw of contents.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue; // blank or full-line comment
+    // Accept an optional `export ` prefix (a common .env form previously ignored).
+    const m = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+    if (!m) continue;
+    const key = m[1];
+    if (key in process.env) continue; // explicit env wins — never overwrite
+    let value = m[2];
+    const dq = value.match(/^"((?:[^"\\]|\\.)*)"\s*(?:#.*)?$/);
+    const sq = value.match(/^'([^']*)'\s*(?:#.*)?$/);
+    if (dq) {
+      // Double-quoted: honour a couple of common escapes; keep any '#' literally.
+      value = dq[1].replace(/\\([nrt"\\])/g, (_, c: string) =>
+        c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
+      );
+    } else if (sq) {
+      value = sq[1]; // single-quoted: fully literal
+    } else {
+      // Unquoted: strip an inline comment (only when preceded by whitespace, so a
+      // '#' inside a value like a URL fragment is preserved) and trim.
+      value = value.replace(/\s+#.*$/, "").trim();
     }
+    process.env[key] = value;
   }
 }

@@ -87,9 +87,13 @@ async function main() {
 
   // Cleanup — connect to the SAME target the apply resolved (not a separate env
   // read), so we drop the column from the database that was actually mutated.
-  const cleanupUrl = await getRequestTargetUrl(safeId);
-  const t = new Client({ connectionString: cleanupUrl! });
+  // getRequestTargetUrl + connect are INSIDE the try so that a control-plane
+  // failure resolving the URL still prints the manual-cleanup warning (the target
+  // was already mutated) instead of throwing silently before the warning.
+  let t: Client | undefined;
   try {
+    const cleanupUrl = await getRequestTargetUrl(safeId);
+    t = new Client({ connectionString: cleanupUrl! });
     await t.connect();
     await t.query(`ALTER TABLE public.users DROP COLUMN IF EXISTS ${SAFE_COL}`);
     console.log(`cleanup — dropped ${SAFE_COL}`);
@@ -104,7 +108,7 @@ async function main() {
     );
     throw e;
   } finally {
-    await t.end().catch(() => {});
+    if (t) await t.end().catch(() => {});
   }
 
   console.log("\n✓ All smoke assertions passed.");
