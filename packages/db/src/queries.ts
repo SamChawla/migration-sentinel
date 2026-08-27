@@ -551,6 +551,43 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
   return rows[0].url ?? process.env.TARGET_DB_URL ?? null;
 }
 
+export interface TargetDbRow {
+  id: string;
+  name: string;
+  alias: string;
+  /** whether a real connection URL is stored (vs. a seeded alias only) */
+  hasUrl: boolean;
+}
+
+/** All configured target databases — the selectable connections. */
+export async function listTargetDatabases(): Promise<TargetDbRow[]> {
+  const rows = await db.select().from(targetDatabase).orderBy(targetDatabase.connectionAlias);
+  return rows.map((r) => ({ id: r.id, name: r.name, alias: r.connectionAlias, hasUrl: Boolean(r.connectionUrl) }));
+}
+
+/** Add a connection (or update the URL of an existing alias). The caller is
+ *  responsible for having tested connectivity first. */
+export async function upsertTargetDatabase(input: { alias: string; url: string }): Promise<TargetDbRow> {
+  const existing = await db
+    .select()
+    .from(targetDatabase)
+    .where(eq(targetDatabase.connectionAlias, input.alias))
+    .limit(1);
+  if (existing.length > 0) {
+    const [row] = await db
+      .update(targetDatabase)
+      .set({ connectionUrl: input.url })
+      .where(eq(targetDatabase.id, existing[0].id))
+      .returning();
+    return { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true };
+  }
+  const [row] = await db
+    .insert(targetDatabase)
+    .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: input.url })
+    .returning();
+  return { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true };
+}
+
 export interface IntakeRow {
   intakeKind: "nl_intent" | "raw_sql" | "github_pr";
   payload: Record<string, unknown>;
