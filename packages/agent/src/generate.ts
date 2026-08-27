@@ -26,36 +26,45 @@ export interface GenerateParams {
   schemaContext: string;
 }
 
-function extractJson(text: string): Record<string, unknown> | null {
-  const start = text.indexOf("{");
-  if (start === -1) return null;
-  // Scan forward tracking string state so braces INSIDE a JSON string value
-  // (e.g. SQL containing `{` / `}`) don't throw off the depth count.
-  let depth = 0;
-  let inStr = false;
-  let esc = false;
-  for (let i = start; i < text.length; i++) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) {
-        try {
-          return JSON.parse(text.slice(start, i + 1)) as Record<string, unknown>;
-        } catch {
-          return null;
+export function extractJson(text: string): Record<string, unknown> | null {
+  // Try each '{'-started, brace-balanced fragment in order until one parses as
+  // JSON. A first fragment that ISN'T valid JSON (e.g. a "{up,down}" placeholder
+  // in prose like `Here is {up,down}: {"up":"..."}`) must NOT abort the search —
+  // the real object may follow. String state is tracked so braces inside a JSON
+  // string value (SQL containing `{`/`}`) don't throw off the depth count.
+  let searchFrom = 0;
+  for (;;) {
+    const start = text.indexOf("{", searchFrom);
+    if (start === -1) return null;
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    let closed = -1;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          closed = i;
+          break;
         }
       }
     }
+    if (closed === -1) return null; // no complete object from here on
+    try {
+      return JSON.parse(text.slice(start, closed + 1)) as Record<string, unknown>;
+    } catch {
+      searchFrom = start + 1; // this candidate wasn't valid JSON — try the next '{'
+    }
   }
-  return null;
 }
 
 export async function generateMigration(params: GenerateParams): Promise<GeneratedMigration> {

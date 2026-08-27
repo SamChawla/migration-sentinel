@@ -158,7 +158,16 @@ async function checkQuestion(client: TrueForge) {
     }));
     const resume = await client.sessions.createTurnStream(session.id, { input: responses as any });
     const r2 = await drainTurn(resume.withMetadata());
-    record("2. ask_user_question pause + resume", true, `asked ${r.questions.length}, resumed → status=${r2.status}`);
+    // Only PASS if the resumed turn actually completed — an "unknown" status
+    // (no turn.done arrived) or a "failed" terminal must NOT certify the
+    // pause/resume API as working (that was silently green before).
+    const resumedOk = r2.status === "done" || r2.status.toLowerCase().includes("complete");
+    record(
+      "2. ask_user_question pause + resume",
+      resumedOk,
+      `asked ${r.questions.length}, resumed → status=${r2.status}` +
+        (resumedOk ? "" : " (resume did not complete — pause/resume NOT verified)"),
+    );
   } catch (e) {
     record("2. ask_user_question pause + resume", false, (e as Error).message);
   }
