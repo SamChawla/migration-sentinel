@@ -14,6 +14,28 @@ describe("gateDisposition — the deterministic gate policy (ADR-004)", () => {
     ).toBe("approval");
   });
 
+  it("green but rollback proof FAILED → typed_confirm, never auto (Qodo #1)", () => {
+    expect(
+      gateDisposition({
+        severity: "green",
+        hasBlockingStatement: false,
+        dataWillFail: false,
+        rollbackVerified: false,
+      }),
+    ).toBe("typed_confirm");
+  });
+
+  it("green + rollback verified → auto", () => {
+    expect(
+      gateDisposition({
+        severity: "green",
+        hasBlockingStatement: false,
+        dataWillFail: false,
+        rollbackVerified: true,
+      }),
+    ).toBe("auto");
+  });
+
   it("red (scoped irreversible, e.g. DROP COLUMN) → typed_confirm", () => {
     expect(
       gateDisposition({ severity: "red", hasBlockingStatement: false, dataWillFail: false }),

@@ -31,6 +31,13 @@ export interface DispositionInput {
    * data is safe, so we escalate rather than assume success.
    */
   dataUnknown?: boolean;
+  /**
+   * The shadow rollback proof verdict. When false, the down migration did not
+   * provably restore the schema (missing/incorrect down) — the migration is not
+   * recoverable and must not take the `auto` fast-path. Undefined = not supplied
+   * (treated as no signal, for callers/tests that don't run the proof).
+   */
+  rollbackVerified?: boolean;
 }
 
 export function gateDisposition(i: DispositionInput): GateDisposition {
@@ -38,6 +45,9 @@ export function gateDisposition(i: DispositionInput): GateDisposition {
   if (i.severity === "red" || i.dataWillFail) return "typed_confirm";
   if (i.dataUnknown) return "typed_confirm";
   if (i.severity === "amber") return "approval";
+  // Green, but the rollback proof failed → not provably recoverable. The policy
+  // requires the auto path to be recoverable, so escalate to a typed confirm.
+  if (i.rollbackVerified === false) return "typed_confirm";
   return "auto";
 }
 

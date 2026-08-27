@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, desc, sql, and } from "drizzle-orm";
+import { eq, desc, sql, and, inArray } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -409,11 +409,39 @@ export async function recordApproval(input: {
   requestId: string;
   decision: "approved" | "rejected";
   approver: string;
-}): Promise<void> {
+}): Promise<boolean> {
   // Typed-confirm is NOT recorded here — it is verified at the gate by
   // assertApproved() (core/gate.ts) before this is ever called. Recording the
   // decision + status is atomic so they can never disagree.
-  await db.transaction(async (tx) => {
+  return await db.transaction(async (tx) => {
+    // GUARD: only a request still awaiting a human decision (or blocked) can be
+    // decided. If it has already advanced to applying/applied/failed/rejected,
+    // the decision is moot and MUST NOT reopen it — resetting an in-flight apply
+    // back to 'approved' would let a second executor re-claim and re-run it
+    // (defeating the one-shot claim). We flip the request status FIRST, under a
+    // state condition; if nothing moved, the request wasn't decidable and we
+    // leave the approval row untouched too.
+    // A BLOCKED request can only ever be REJECTED (closed out) — never approved.
+    // Whole-dataset destruction is not human-overridable, so an 'approved'
+    // decision is eligible only from 'awaiting_approval'. Rejecting is allowed
+    // from either decidable state.
+    const newStatus = input.decision === "approved" ? "approved" : "rejected";
+    const eligible =
+      input.decision === "approved"
+        ? (["awaiting_approval"] as const)
+        : (["awaiting_approval", "blocked"] as const);
+    const moved = await tx
+      .update(migrationRequest)
+      .set({ status: newStatus, updatedAt: new Date() })
+      .where(
+        and(
+          eq(migrationRequest.id, input.requestId),
+          inArray(migrationRequest.status, [...eligible]),
+        ),
+      )
+      .returning({ id: migrationRequest.id });
+    if (moved.length !== 1) return false;
+
     await tx
       .update(approval)
       .set({
@@ -422,33 +450,36 @@ export async function recordApproval(input: {
         decidedAt: new Date(),
       })
       .where(eq(approval.migrationRequestId, input.requestId));
-
-    // Approved → 'approved' (NOT 'applied'). The guarded apply executor owns the
-    // transition to 'applying'/'applied'/'failed' once it has actually run the UP
-    // against the target. Rejected is terminal here.
-    const newStatus = input.decision === "approved" ? "approved" : "rejected";
-    await tx
-      .update(migrationRequest)
-      .set({ status: newStatus, updatedAt: new Date() })
-      .where(eq(migrationRequest.id, input.requestId));
+    return true;
   });
 }
 
 /**
- * Reset approval to pending (used when the gate check fails). Reverts BOTH the
- * approval decision and the request status back to awaiting_approval so a
- * rejected gate check never leaves the request looking approved.
+ * Reset approval to pending (used when a gate pre-check fails). GUARDED: it only
+ * acts when the request is still 'awaiting_approval'. A failing gate check from
+ * one caller must NEVER erase a valid approval that another caller has already
+ * recorded and CLAIMED for apply — resetting an 'approved'/'applying' request
+ * would leave the executor committing while the DB shows the approval as pending.
+ * Returns whether it actually reset anything.
  */
-export async function resetApproval(requestId: string): Promise<void> {
-  await db.transaction(async (tx) => {
+export async function resetApproval(requestId: string): Promise<boolean> {
+  return await db.transaction(async (tx) => {
+    const moved = await tx
+      .update(migrationRequest)
+      .set({ status: "awaiting_approval", updatedAt: new Date() })
+      .where(
+        and(
+          eq(migrationRequest.id, requestId),
+          eq(migrationRequest.status, "awaiting_approval"),
+        ),
+      )
+      .returning({ id: migrationRequest.id });
+    if (moved.length !== 1) return false;
     await tx
       .update(approval)
       .set({ decision: "pending", approver: null, decidedAt: null })
       .where(eq(approval.migrationRequestId, requestId));
-    await tx
-      .update(migrationRequest)
-      .set({ status: "awaiting_approval", updatedAt: new Date() })
-      .where(eq(migrationRequest.id, requestId));
+    return true;
   });
 }
 
@@ -558,6 +589,45 @@ export async function setRequestStatus(requestId: string, status: RequestStatus)
     .update(migrationRequest)
     .set({ status, updatedAt: new Date() })
     .where(eq(migrationRequest.id, requestId));
+}
+
+/**
+ * Atomically claim a request for apply: flip 'approved' → 'applying' in a single
+ * conditional UPDATE. Returns true only for the caller that won the transition;
+ * a retry after success or a concurrent second caller sees status !== 'approved'
+ * and gets false, making the guarded apply strictly one-shot.
+ */
+export async function claimRequestForApply(requestId: string): Promise<boolean> {
+  const rows = await db
+    .update(migrationRequest)
+    .set({ status: "applying", updatedAt: new Date() })
+    .where(
+      and(
+        eq(migrationRequest.id, requestId),
+        eq(migrationRequest.status, "approved"),
+        // Defense in depth: the CURRENT approval decision must still be 'approved'
+        // at claim time, not merely the request status. Guards against any window
+        // where a concurrent rejection has flipped the decision — the claim then
+        // finds no matching approval row and refuses, so the executor never runs.
+        sql`EXISTS (SELECT 1 FROM ${approval} WHERE ${approval.migrationRequestId} = ${migrationRequest.id} AND ${approval.decision} = 'approved')`,
+      ),
+    )
+    .returning({ id: migrationRequest.id });
+  return rows.length === 1;
+}
+
+/**
+ * Atomically claim a fresh request for the analysis pipeline: flip 'received' →
+ * 'generating' in one conditional UPDATE. Only the caller that wins proceeds, so
+ * concurrent runAgentPipeline invocations can't both analyze and clobber state.
+ */
+export async function claimRequestForPipeline(requestId: string): Promise<boolean> {
+  const rows = await db
+    .update(migrationRequest)
+    .set({ status: "generating", updatedAt: new Date() })
+    .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, "received")))
+    .returning({ id: migrationRequest.id });
+  return rows.length === 1;
 }
 
 export interface PersistSafetyInput {
@@ -797,7 +867,10 @@ export async function getDashboardStats(): Promise<DashboardStats> {
   return {
     awaiting: countMap.get("awaiting_approval") ?? 0,
     applied: countMap.get("applied") ?? 0,
-    blocked: (countMap.get("blocked") ?? 0) + (countMap.get("rejected") ?? 0) + (countMap.get("failed") ?? 0),
+    // "Blocked at gate" means exactly status='blocked' (whole-dataset destruction
+    // Sentinel refuses). Human rejections and pipeline/apply failures are NOT
+    // gate blocks and must not inflate this metric.
+    blocked: countMap.get("blocked") ?? 0,
     proven: provenResult?.count ?? 0,
   };
 }
