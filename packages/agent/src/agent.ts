@@ -124,20 +124,26 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
     let artifact = await getLatestArtifact(requestId);
     if (!artifact || !artifact.upSql.trim()) {
       const intake = await getRequestIntake(requestId);
-      const intent =
-        (intake?.payload.intent as string | undefined) ?? (intake?.payload.sql as string | undefined);
-      if (!intent) throw new Error("No SQL and no intent to generate from.");
+      // Keep raw SQL and NL intent DISTINCT: raw SQL must drive the generator's
+      // correction/repair prompt (rawSql), not be fed as a natural-language intent
+      // — otherwise a submitted migration is regenerated from scratch instead of
+      // corrected.
+      const rawSql = (intake?.payload.sql as string | undefined)?.trim() || undefined;
+      const intent = (intake?.payload.intent as string | undefined)?.trim() || undefined;
+      if (!rawSql && !intent) throw new Error("No SQL and no intent to generate from.");
 
       await setRequestStatus(requestId, "generating");
       await insertAuditEvent({
         migrationRequestId: requestId,
         actor: "sentinel.agent",
         action: "generate.started",
-        detail: "TrueForge generating a paired {up, down} migration from the intent.",
+        detail: rawSql
+          ? "TrueForge correcting the submitted SQL into a paired {up, down} migration."
+          : "TrueForge generating a paired {up, down} migration from the intent.",
         tone: "info",
       });
       const schemaContext = await dumpTargetSchema(targetUrl);
-      const gen = await generateMigration({ intent, schemaContext });
+      const gen = await generateMigration({ intent, rawSql, schemaContext });
       artifact = await upsertGeneratedArtifact({
         requestId,
         upSql: gen.up,

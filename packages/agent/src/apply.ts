@@ -52,6 +52,7 @@ export function isNonTransactional(upSql: string): boolean {
     const c = codeOnly(stmt);
     return (
       /\b(VACUUM|REINDEX\s+(?:DATABASE|SCHEMA|SYSTEM)|CREATE\s+DATABASE|DROP\s+DATABASE|CREATE\s+TABLESPACE|DROP\s+TABLESPACE|ALTER\s+SYSTEM|CREATE\s+SUBSCRIPTION|DROP\s+SUBSCRIPTION)\b/i.test(c) ||
+      /\bALTER\s+DATABASE\b[\s\S]*\bSET\s+TABLESPACE\b/i.test(c) ||
       /\bINDEX\s+CONCURRENTLY\b/i.test(c) ||
       /\bREINDEX\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
       /\bREFRESH\s+MATERIALIZED\s+VIEW\b[\s\S]*\bCONCURRENTLY\b/i.test(c) ||
@@ -97,6 +98,11 @@ export interface ApplyResult {
   status: "applied" | "failed";
   error?: string;
   logs: string;
+  /** TRUE only when the target commit AND the control-plane 'applied' status write
+   *  both succeeded. When the target committed but the status write failed (a
+   *  control-plane hiccup), this is false and the request may be left 'applying'
+   *  pending reconciliation — the caller must NOT report a clean 'applied'. */
+  controlPlaneSynced?: boolean;
 }
 
 export async function applyMigration(requestId: string, opts: ApplyOptions = {}): Promise<ApplyResult> {
@@ -235,17 +241,32 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     // Target is committed. Success bookkeeping is best-effort — a control-plane
     // hiccup here must not report the (already done) apply as failed.
     await bestEffort(() => finishApplyRun(runId!, { status: "succeeded", logs: logs.join("\n"), appliedAt: new Date() }));
-    await bestEffort(() => setRequestStatus(requestId, "applied"));
+    // The 'applied' status write is the one that matters for the console; RETRY it
+    // a few times, and REPORT whether it stuck. If it never does, the request may
+    // remain 'applying' despite a committed target — the caller must not present a
+    // clean 'applied'.
+    let controlPlaneSynced = false;
+    for (let attempt = 0; attempt < 3 && !controlPlaneSynced; attempt++) {
+      try {
+        await setRequestStatus(requestId, "applied");
+        controlPlaneSynced = true;
+      } catch (e) {
+        log(`WARN — control-plane status write failed (attempt ${attempt + 1}): ${(e as Error).message}`);
+      }
+    }
+    if (!controlPlaneSynced) {
+      log(`WARN — target COMMITTED but control-plane still shows 'applying'; reconciliation required.`);
+    }
     await bestEffort(() =>
       insertAuditEvent({
         migrationRequestId: requestId,
         actor: "sentinel.apply",
         action: "apply.succeeded",
-        detail: `Applied to target — "${rec.title}".`,
+        detail: `Applied to target — "${rec.title}".${controlPlaneSynced ? "" : " (control-plane status write failed — reconciliation required)"}`,
         tone: "green",
       }),
     );
-    return { status: "applied", logs: logs.join("\n") };
+    return { status: "applied", logs: logs.join("\n"), controlPlaneSynced };
   } catch (e) {
     // Any failure in the autocommit path is potentially-partial: an in-flight
     // statement may have committed even though we never saw its response, so

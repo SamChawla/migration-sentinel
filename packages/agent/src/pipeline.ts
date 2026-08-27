@@ -48,6 +48,25 @@ export interface SafetyPipelineInput {
   targetReadOnly?: Client;
 }
 
+/** Race a promise against a wall-clock deadline. On timeout it runs `onTimeout`
+ *  (to abort the underlying work) and rejects — independent of any DB-session GUC
+ *  the running SQL might have disabled. */
+async function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () => Promise<unknown>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      Promise.resolve(onTimeout())
+        .catch(() => {})
+        .finally(() => reject(new Error(`shadow dry-run exceeded ${ms}ms budget — aborted`)));
+    }, ms);
+  });
+  try {
+    return await Promise.race([p, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function runSafetyPipeline(input: SafetyPipelineInput): Promise<SafetyReport> {
   // 1. static classification (fast, no DB)
   const classification = classifyMigration(input.up);
@@ -78,7 +97,17 @@ export async function runSafetyPipeline(input: SafetyPipelineInput): Promise<Saf
     };
     await client.query(`SET statement_timeout = ${posInt(process.env.SHADOW_STATEMENT_TIMEOUT_MS, 30_000)}`);
     await client.query(`SET lock_timeout = ${posInt(process.env.SHADOW_LOCK_TIMEOUT_MS, 5_000)}`);
-    rollback = await verifyRollback(client, input.up, input.down);
+    // The session GUCs above are DEFENSE for well-behaved migrations, but the
+    // untrusted up/down runs on this same session and could `SET statement_timeout
+    // = 0` / `RESET` / set_config to remove the bound. So ALSO enforce an
+    // independent WALL-CLOCK deadline in Node: on expiry we destroy the shadow
+    // (which pg_terminate_backend()s the hung session), aborting the run.
+    const budgetMs = Math.min(posInt(process.env.SHADOW_DRYRUN_BUDGET_MS, 60_000), 2_147_483_647);
+    rollback = await withDeadline(
+      verifyRollback(client, input.up, input.down),
+      budgetMs,
+      () => shadow.destroy(),
+    );
   } finally {
     // Guard client.end() so a shutdown rejection can't skip destroy() (leaking
     // the shadow database) or mask the original verification error.

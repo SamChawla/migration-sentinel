@@ -36,6 +36,12 @@ describe("isNonTransactional — autocommit detection (R5 #4)", () => {
     expect(isNonTransactional("REFRESH MATERIALIZED VIEW CONCURRENTLY mv")).toBe(true);
   });
 
+  it("detects ALTER DATABASE ... SET TABLESPACE as autocommit-only (R11 #3)", () => {
+    expect(isNonTransactional("ALTER DATABASE app SET TABLESPACE fast_ssd")).toBe(true);
+    // ALTER TABLE ... SET TABLESPACE is transactional and must NOT be flagged
+    expect(isNonTransactional("ALTER TABLE t SET TABLESPACE fast_ssd")).toBe(false);
+  });
+
   it("treats ALTER TYPE ... ADD VALUE as transactional in PG12+ (R6 #3)", () => {
     // No longer forced to autocommit — running it in the executor's txn lets a
     // later failure roll back atomically instead of leaving the enum value.
