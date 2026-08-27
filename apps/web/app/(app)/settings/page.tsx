@@ -1,6 +1,36 @@
+import { Client } from "pg";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
+
+/** Redact any password (userinfo or query param) before showing a connection URL. */
+function redact(url: string | undefined): string {
+  if (!url) return "not configured";
+  return url
+    .replace(/(:\/\/[^:/@]+):[^@]*@/, "$1:***@")
+    .replace(/([?&](?:password|sslpassword|passfile)=)[^&\s]*/gi, "$1***");
+}
+
+/** Real availability probe — a quick connect + SELECT 1 with a short timeout. */
+async function probeDb(url: string | undefined): Promise<"green" | "red" | undefined> {
+  if (!url) return undefined;
+  const c = new Client({ connectionString: url, connectionTimeoutMillis: 1500 });
+  try {
+    await c.connect();
+    await c.query("SELECT 1");
+    return "green";
+  } catch {
+    return "red";
+  } finally {
+    await c.end().catch(() => {});
+  }
+}
+
+/** Positive-int env read matching the guarded-apply defaults in apply.ts. */
+function posIntEnv(name: string, def: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : def;
+}
 
 function Row({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
@@ -17,6 +47,23 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: stri
 export default async function Settings() {
   const session = await getSession();
   const user = session?.user ?? "approver";
+
+  // Read the ACTUAL configured databases + probe them, instead of hard-coding
+  // localhost strings and an unconditional green.
+  const targetUrl = process.env.TARGET_DB_URL;
+  const shadowUrl = process.env.SHADOW_ADMIN_URL;
+  const sentinelUrl = process.env.DATABASE_URL;
+  const [targetTone, shadowTone, sentinelTone] = await Promise.all([
+    probeDb(targetUrl),
+    probeDb(shadowUrl),
+    probeDb(sentinelUrl),
+  ]);
+
+  // Real apply guards — same env + defaults the executor (apply.ts) uses.
+  const lockMs = posIntEnv("APPLY_LOCK_TIMEOUT_MS", 3000);
+  const stmtMs = posIntEnv("APPLY_STATEMENT_TIMEOUT_MS", 30000);
+  const connMs = posIntEnv("APPLY_CONNECT_TIMEOUT_MS", 10000);
+  const applyGuardsTone = targetTone === "red" ? "red" : "green";
   const initials =
     user
       .split(/[\s@._-]+/)
@@ -52,9 +99,9 @@ export default async function Settings() {
 
       <div className="glass" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Database connections</h3>
-        <Row label="Target (prod)" value="postgres://…@localhost:5433/prod" tone="green" />
-        <Row label="Shadow (ephemeral)" value="postgres://…@localhost:5434" />
-        <Row label="Sentinel (control plane)" value="postgres://…@localhost:5435/sentinel" />
+        <Row label="Target (prod)" value={redact(targetUrl)} tone={targetTone} />
+        <Row label="Shadow (ephemeral)" value={redact(shadowUrl)} tone={shadowTone} />
+        <Row label="Sentinel (control plane)" value={redact(sentinelUrl)} tone={sentinelTone} />
       </div>
 
       <div className="glass" style={{ marginBottom: 16 }}>
@@ -67,7 +114,11 @@ export default async function Settings() {
       <div className="glass">
         <h3 className="section-title">Safety policy</h3>
         <Row label="RED severity" value="typed confirmation required" tone="red" />
-        <Row label="Apply guards" value="lock_timeout=2s · statement_timeout=30s" tone="green" />
+        <Row
+          label="Apply guards"
+          value={`lock_timeout=${lockMs / 1000}s · statement_timeout=${stmtMs / 1000}s · connect_timeout=${connMs / 1000}s`}
+          tone={applyGuardsTone}
+        />
         <Row label="Gate enforcement" value="assertApproved() — independent of agent" tone="green" />
       </div>
     </>

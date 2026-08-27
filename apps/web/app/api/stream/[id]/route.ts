@@ -17,13 +17,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 
   const { id } = await params;
   const encoder = new TextEncoder();
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
 
   const clear = () => {
     closed = true;
     if (timer) {
-      clearInterval(timer);
+      clearTimeout(timer);
       timer = null;
     }
   };
@@ -86,8 +86,14 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
         }
       };
 
-      timer = setInterval(tick, 1000);
-      await tick();
+      // Self-scheduling: wait for each tick to finish before scheduling the next,
+      // so a slow control-plane query can't cause ticks to overlap and pile up
+      // (setInterval would fire regardless of whether the previous tick returned).
+      const loop = async () => {
+        await tick();
+        if (!closed) timer = setTimeout(loop, 1000);
+      };
+      await loop();
     },
     // Reader cancelled (client closed the EventSource) — tear down the poller.
     cancel() {

@@ -834,7 +834,11 @@ export async function listAuditEvents(
   const rows = await db
     .select()
     .from(auditEvent)
-    .orderBy(desc(auditEvent.createdAt))
+    // (created_at, id) is a TOTAL, deterministic order — created_at alone is
+    // non-unique, so ties would sort arbitrarily between page requests and make
+    // the same event appear twice (or vanish) as the operator pages. The id
+    // tiebreaker pins the order so paging is stable.
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
     .limit(limit)
     .offset(offset);
   return rows.map(toAuditRow);
@@ -853,7 +857,7 @@ export async function listAuditEventsForRequest(requestId: string, limit = 50): 
     .select()
     .from(auditEvent)
     .where(eq(auditEvent.migrationRequestId, requestId))
-    .orderBy(desc(auditEvent.createdAt))
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
     .limit(Math.min(Math.max(limit, 1), 200));
   return rows.map(toAuditRow);
 }
