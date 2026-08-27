@@ -79,20 +79,27 @@ export function Walkthrough() {
   const step = STEPS[idx];
   const last = idx === STEPS.length - 1;
 
-  // Auto-open after a login, on the dashboard (where the anchored elements
-  // exist). The login sets a per-navigation sessionStorage flag which we consume
-  // here, so the tour opens on EVERY login (demo) but not on ordinary dashboard
-  // visits within the same session.
+  // Auto-open once per browser session on the dashboard (where the anchored
+  // elements exist). This covers both flows: after a login (which sets a
+  // per-navigation flag) and the no-login demo (first console visit). It does
+  // NOT re-open on ordinary navigation back to the dashboard within a session.
   useEffect(() => {
     if (pathname !== "/dashboard") return;
+    let seen = false;
     let fromLogin = false;
     try {
+      seen = sessionStorage.getItem("ms_tour_seen") === "1";
       fromLogin = sessionStorage.getItem("ms_tour_on_login") === "1";
       if (fromLogin) sessionStorage.removeItem("ms_tour_on_login");
     } catch {
       /* blocked storage → just don't auto-open */
     }
-    if (fromLogin) {
+    if (!seen || fromLogin) {
+      try {
+        sessionStorage.setItem("ms_tour_seen", "1");
+      } catch {
+        /* ignore */
+      }
       setIdx(0);
       setOpen(true);
     }

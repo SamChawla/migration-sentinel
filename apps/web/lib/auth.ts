@@ -38,18 +38,29 @@ function safeDecode(value: string): string | null {
   }
 }
 
+/** Demo-only: open the console without a login. OFF by default — set
+ *  NEXT_PUBLIC_DEMO_OPEN_ACCESS=1 to let anyone reach the console as the single
+ *  configured approver. NEVER enable this in a real deployment: it makes the
+ *  approval gate reachable without credentials. */
+export function demoOpenAccess(): boolean {
+  return ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").trim().toLowerCase());
+}
+
 /** Returns the authenticated approver, or null if the request has no valid session. */
 export async function getSession(): Promise<Session | null> {
   const jar = await cookies();
   const raw = jar.get(SESSION_COOKIE)?.value;
   const session = raw != null ? safeDecode(raw) : null;
-  if (session === null || !credentialMatches(session)) return null;
   // SECURITY: the actor must NOT come from the client-supplied ms_auth cookie —
   // it is unsigned, so any holder of the shared approver token could submit or
   // approve as an arbitrary person and the audit log could never establish who
   // performed a production action. There is a single shared token, so there is a
   // single, SERVER-CONFIGURED approver identity.
-  return { user: process.env.APPROVER_IDENTITY?.trim() || "approver" };
+  const identity = process.env.APPROVER_IDENTITY?.trim() || "approver";
+  if (session !== null && credentialMatches(session)) return { user: identity };
+  // Demo mode: no login required — treat every visitor as the approver.
+  if (demoOpenAccess()) return { user: identity };
+  return null;
 }
 
 export const SESSION_COOKIE_NAME = SESSION_COOKIE;
