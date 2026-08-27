@@ -193,12 +193,22 @@ export async function schemaFingerprint(
   const ranges = await client.query(
     `SELECT n.nspname AS schema, t.typname, t.typtype,
             format_type(r.rngsubtype, -1) AS subtype,
-            co.collname AS collation, opc.opcname AS subtype_opclass
+            co.collname AS collation, cn.nspname AS collation_schema,
+            opc.opcname AS subtype_opclass, opn.nspname AS opclass_schema,
+            CASE WHEN r.rngcanonical::oid = 0 THEN NULL
+                 ELSE r.rngcanonical::oid::regprocedure::text END AS canonical,
+            CASE WHEN r.rngsubdiff::oid = 0 THEN NULL
+                 ELSE r.rngsubdiff::oid::regprocedure::text END AS subdiff,
+            mtn.nspname AS multirange_schema, mt.typname AS multirange_type
        FROM pg_range r
        JOIN pg_type t ON t.oid = r.rngtypid
        JOIN pg_namespace n ON n.oid = t.typnamespace
        LEFT JOIN pg_collation co ON co.oid = r.rngcollation
+       LEFT JOIN pg_namespace cn ON cn.oid = co.collnamespace
        LEFT JOIN pg_opclass opc ON opc.oid = r.rngsubopc
+       LEFT JOIN pg_namespace opn ON opn.oid = opc.opcnamespace
+       LEFT JOIN pg_type mt ON mt.oid = r.rngmultitypid
+       LEFT JOIN pg_namespace mtn ON mtn.oid = mt.typnamespace
       WHERE ${NS} ORDER BY 1, 2`,
   );
   const canonical = JSON.stringify({
