@@ -46,37 +46,48 @@ function clip(s: string, max: number): string {
 // pg_advisory*, pg_sleep, …), executed inside a READ ONLY transaction that caps
 // rows AT THE DATABASE (LIMIT rowCap+1) so a huge result never buffers in memory.
 
-/** Race `p` against a wall-clock deadline; on timeout destroy `client` so a
- *  stalled socket can't hold the request open past `ms`. */
-async function withDeadline<T>(p: Promise<T>, ms: number, client: Client): Promise<T> {
+/** Race `p` against a wall-clock deadline AND the request's abort signal; when
+ *  either fires, destroy `client` so a disconnected client (or a stalled socket)
+ *  never leaves a target query running past `ms`. */
+async function raceCancellable<T>(p: Promise<T>, ms: number, client: Client, signal?: AbortSignal): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
+  let onAbort: (() => void) | undefined;
+  const cancel = new Promise<never>((_, reject) => {
+    const kill = (msg: string) => {
       client.end().catch(() => {}); // force-cancel the in-flight query
-      reject(new Error(`Query exceeded ${ms} ms deadline.`));
-    }, ms);
+      reject(new Error(msg));
+    };
+    timer = setTimeout(() => kill(`Query exceeded ${ms} ms deadline.`), ms);
+    if (signal) {
+      if (signal.aborted) return kill("Request aborted.");
+      onAbort = () => kill("Request aborted.");
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
   });
   try {
-    return await Promise.race([p, deadline]);
+    return await Promise.race([p, cancel]);
   } finally {
     if (timer) clearTimeout(timer);
-    // If the deadline won, `p` is still pending and its later rejection (the
-    // guarded query failing on the destroyed client) would be unhandled — swallow it.
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    // If cancellation won, `p` is still pending; its later rejection (the guarded
+    // query failing on the destroyed client) would be unhandled — swallow it.
     p.catch(() => {});
   }
 }
 
 /** Execute a guarded read-only query against the target DB. Never throws for a
- *  SQL/guard error — returns it as data so the model can reason about it. */
-async function runTargetQuery(targetUrl: string, raw: string): Promise<RanQuery & { _rows?: unknown[] }> {
+ *  SQL/guard error — returns it as data so the model can reason about it. The
+ *  request `signal` cancels the connect + query so a disconnected client stops
+ *  target-DB work immediately rather than running until the deadline. */
+async function runTargetQuery(targetUrl: string, raw: string, signal?: AbortSignal): Promise<RanQuery & { _rows?: unknown[] }> {
+  if (signal?.aborted) return { sql: raw.trim(), error: "Request aborted." };
   const client = new Client({ connectionString: targetUrl, connectionTimeoutMillis: 4000 });
   try {
-    await client.connect();
-    const { rows, truncated } = await withDeadline(
-      runGuardedReadOnly(client, raw, { timeoutMs: QUERY_TIMEOUT_MS, rowCap: MAX_ROWS }),
-      QUERY_DEADLINE_MS,
-      client,
-    );
+    const work = (async () => {
+      await client.connect();
+      return runGuardedReadOnly(client, raw, { timeoutMs: QUERY_TIMEOUT_MS, rowCap: MAX_ROWS });
+    })();
+    const { rows, truncated } = await raceCancellable(work, QUERY_DEADLINE_MS, client, signal);
     return { sql: raw.trim(), rowCount: rows.length, truncated, ...(rows.length ? { _rows: rows } : {}) };
   } catch (e) {
     return { sql: raw.trim(), error: (e as Error).message };
@@ -197,7 +208,7 @@ export async function answerMigrationQuestion(input: {
         continue;
       }
 
-      const ran = await runTargetQuery(input.targetUrl, sqlArg);
+      const ran = await runTargetQuery(input.targetUrl, sqlArg, input.signal);
       const { _rows, ...publicPart } = ran;
       queries.push(publicPart);
       messages.push({
