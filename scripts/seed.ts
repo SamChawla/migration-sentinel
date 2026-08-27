@@ -33,28 +33,49 @@ async function main() {
   await client.connect();
   console.log(`→ Connected to target: ${redact(url)}`);
 
-  // GUARD: this fixture DROPS and recreates the public schema — it destroys ALL
-  // objects and data in the target. Refuse to run against a non-empty database
-  // unless --reset is passed explicitly, so a stray/misconfigured db:seed can't
-  // wipe a populated (possibly production) target.
+  // GUARD: this fixture runs `DROP SCHEMA public CASCADE` — it destroys EVERY
+  // object (tables, views, sequences, functions, types, …) and all data in the
+  // target. Refuse against a non-empty database unless --reset is passed.
   const RESET = process.argv.includes("--reset");
-  const existing = await client.query<{ n: number }>(
-    "SELECT count(*)::int AS n FROM pg_tables WHERE schemaname = 'public'",
-  );
-  if (existing.rows[0].n > 0 && !RESET) {
-    console.error(
-      `✗ Refusing to seed: the target's public schema already has ${existing.rows[0].n} table(s). ` +
-        `This fixture DROPS the public schema (all objects + data). Re-run with --reset to wipe and reseed.`,
-    );
-    await client.end();
-    process.exit(1);
-  }
-
   const sql = await readFile(SCHEMA_FILE, "utf8");
   console.log("→ Loading fixtures/target_schema.sql (drops & recreates public schema)…");
   const started = Date.now();
-  await client.query(sql);
-  const ms = Date.now() - started;
+
+  // The occupancy check and the destructive fixture run in ONE SERIALIZABLE
+  // transaction: (a) it counts EVERY object type, not just tables, so a schema of
+  // views/sequences/functions/types isn't treated as empty; (b) if another session
+  // commits a public-schema object between the check and the DROP, the
+  // serialization conflict aborts this transaction rather than silently wiping it.
+  let ms: number;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL SERIALIZABLE");
+    const existing = await client.query<{ n: number }>(
+      `SELECT (
+         (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','c'))
+       + (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public')
+       + (SELECT count(*) FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+            WHERE n.nspname = 'public' AND t.typtype IN ('e','d','r'))
+       )::int AS n`,
+    );
+    if (existing.rows[0].n > 0 && !RESET) {
+      await client.query("ROLLBACK");
+      console.error(
+        `✗ Refusing to seed: the target's public schema already holds ${existing.rows[0].n} object(s) ` +
+          `(tables / views / sequences / functions / types). This fixture DROPS the public schema. ` +
+          `Re-run with --reset to wipe and reseed.`,
+      );
+      await client.end();
+      process.exit(1);
+    }
+    await client.query(sql);
+    await client.query("COMMIT");
+    ms = Date.now() - started;
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw e;
+  }
 
   const users = await client.query<{ count: string }>("SELECT count(*) FROM public.users");
   const orders = await client.query<{ count: string }>("SELECT count(*) FROM public.orders");
