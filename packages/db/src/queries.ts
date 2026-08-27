@@ -823,14 +823,27 @@ function toAuditRow(e: typeof auditEvent.$inferSelect): AuditEventRow {
   };
 }
 
-export async function listAuditEvents(limit = 100): Promise<AuditEventRow[]> {
-  // Bounded — the audit log grows without limit; callers render only a handful.
+export async function listAuditEvents(
+  opts: { limit?: number; offset?: number } = {},
+): Promise<AuditEventRow[]> {
+  // Bounded + PAGINATED — the audit log grows without limit. A single-page fetch
+  // presented as the whole append-only history silently drops older events once
+  // it exceeds the cap; the Audit Log page pages through it with countAuditEvents.
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
   const rows = await db
     .select()
     .from(auditEvent)
     .orderBy(desc(auditEvent.createdAt))
-    .limit(Math.min(Math.max(limit, 1), 500));
+    .limit(limit)
+    .offset(offset);
   return rows.map(toAuditRow);
+}
+
+/** Total number of audit events (for accurate pagination totals). */
+export async function countAuditEvents(): Promise<number> {
+  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(auditEvent);
+  return row?.count ?? 0;
 }
 
 /** Audit events for ONE request, filtered in SQL and bounded — used by the live

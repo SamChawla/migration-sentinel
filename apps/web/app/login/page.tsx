@@ -13,20 +13,28 @@ export default function Login() {
   async function signIn(asUser?: string) {
     setBusy(true);
     setError(null);
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      // The password field carries the APPROVER_TOKEN — the API validates it.
-      body: JSON.stringify({ username: asUser ?? username, token: password }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // The password field carries the APPROVER_TOKEN — the API validates it.
+        body: JSON.stringify({ username: asUser ?? username, token: password }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.error ?? "Sign-in failed.");
+        setBusy(false);
+        return;
+      }
+      // Success — navigate away; the page unmounts, so leave `busy` as-is.
+      router.push("/dashboard");
+      router.refresh();
+    } catch {
+      // A network/service failure rejects fetch() — without this, `busy` would
+      // stay true and the button would sit disabled on "Signing in..." forever.
+      setError("Could not reach the server. Check your connection and try again.");
       setBusy(false);
-      setError(body.error ?? "Sign-in failed.");
-      return;
     }
-    router.push("/dashboard");
-    router.refresh();
   }
 
   return (

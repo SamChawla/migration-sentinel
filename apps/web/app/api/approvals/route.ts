@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRequest, recordApproval, resetApproval, insertAuditEvent } from "@sentinel/db/queries";
+import { getRequest, recordApproval, resetApproval, insertAuditEvent, setRequestStatus } from "@sentinel/db/queries";
 import { assertApproved, GateError } from "@sentinel/core";
 import { classifyMigration } from "@sentinel/shadow";
 import { applyMigration } from "@sentinel/agent";
@@ -107,21 +107,43 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
-  await insertAuditEvent({
-    migrationRequestId: requestId,
-    actor,
-    action: "approval.approved",
-    detail: `Approved — "${rec.title}". Handing to the guarded apply executor.`,
-    tone: "green",
-  });
-
+  // From here the request is 'approved'. If ANYTHING below throws before the
+  // guarded apply claims it (an audit-write failure, or applyMigration throwing
+  // on the gate / subversion / no-target checks that run BEFORE its claim), the
+  // request would be stranded in 'approved' — the console hides its controls and
+  // the approvals API 409s it, so no operator can move it. Terminate it instead.
   try {
+    await insertAuditEvent({
+      migrationRequestId: requestId,
+      actor,
+      action: "approval.approved",
+      detail: `Approved — "${rec.title}". Handing to the guarded apply executor.`,
+      tone: "green",
+    });
     const result = await applyMigration(requestId, { typedConfirm: typedConfirm ?? null });
     if (result.status === "failed") {
       return NextResponse.json({ ok: false, status: "failed", error: result.error }, { status: 500 });
     }
     return NextResponse.json({ ok: true, status: "applied" });
   } catch (e) {
+    // applyMigration lands its OWN post-claim failures in 'failed' (it returns,
+    // doesn't throw). A throw here means the apply never claimed, so the request
+    // is still 'approved' — mark it failed so it isn't stranded.
+    try {
+      const cur = await getRequest(requestId);
+      if (cur?.status === "approved") {
+        await setRequestStatus(requestId, "failed");
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.apply",
+          action: "apply.failed",
+          detail: `Apply could not start after approval: ${(e as Error).message}`,
+          tone: "red",
+        });
+      }
+    } catch {
+      /* best-effort unstrand — don't mask the original error */
+    }
     if (e instanceof GateError) {
       return NextResponse.json({ error: e.message }, { status: 403 });
     }
