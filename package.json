@@ -21,7 +21,7 @@
     "test:watch": "vitest",
     "test:blast": "vitest run blast",
     "test:rollback": "vitest run rollback",
-    "verify:blast": "node --experimental-strip-types scripts/verify_blast.ts"
+    "verify:blast": "tsx scripts/verify_blast.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"
