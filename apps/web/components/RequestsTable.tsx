@@ -1,6 +1,4 @@
-"use client";
 import Link from "next/link";
-import { useMemo, useState } from "react";
 import type { RequestRecord } from "@sentinel/db/queries";
 import { SeverityChip, StatusChip } from "@/components/chips";
 import { timeAgo } from "@/lib/format";
@@ -15,47 +13,50 @@ const FILTERS = [
   { key: "failed", label: "Failed" },
 ] as const;
 
-function matchesFilter(r: RequestRecord, f: string): boolean {
-  // Each filter maps to a DISTINCT outcome — never conflate approved with
-  // applied, or human rejections with pipeline/apply failures.
-  if (f === "all") return true;
-  if (f === "awaiting_approval") return r.status === "awaiting_approval";
-  if (f === "in_flight") return ["received", "generating", "reviewing", "dry_running", "approved", "applying"].includes(r.status);
-  if (f === "applied") return r.status === "applied";
-  if (f === "blocked") return r.status === "blocked";
-  if (f === "rejected") return r.status === "rejected";
-  if (f === "failed") return ["failed", "rolled_back"].includes(r.status);
-  return true;
+function chipHref(status: string, q: string): string {
+  const sp = new URLSearchParams();
+  if (status && status !== "all") sp.set("status", status);
+  if (q) sp.set("q", q);
+  const qs = sp.toString();
+  return qs ? `/requests?${qs}` : "/requests";
 }
 
-export function RequestsTable({ records, filterable = false, initialQuery = "" }: { records: RequestRecord[]; filterable?: boolean; initialQuery?: string }) {
-  const [filter, setFilter] = useState<string>("all");
-  const [q, setQ] = useState(initialQuery);
-
-  const rows = useMemo(
-    () =>
-      records
-        .filter((r) => matchesFilter(r, filter))
-        .filter((r) => !q || (r.title + r.targetDb + r.requestedBy).toLowerCase().includes(q.toLowerCase())),
-    [records, filter, q],
-  );
-
+/**
+ * Records are filtered SERVER-SIDE (by q + status), so the chips and search box
+ * drive navigation — a filter reflects EVERY matching migration across all
+ * pages, and the total/pagination stay consistent, instead of filtering only the
+ * ~50 rows already loaded for the current page.
+ */
+export function RequestsTable({
+  records,
+  filterable = false,
+  query = "",
+  activeFilter = "all",
+}: {
+  records: RequestRecord[];
+  filterable?: boolean;
+  query?: string;
+  activeFilter?: string;
+}) {
   return (
     <>
       {filterable && (
         <div className="filters">
           {FILTERS.map((f) => (
-            <button key={f.key} className={`fchip${filter === f.key ? " on" : ""}`} onClick={() => setFilter(f.key)}>
+            <Link key={f.key} href={chipHref(f.key, query)} className={`fchip${activeFilter === f.key ? " on" : ""}`}>
               {f.label}
-            </button>
+            </Link>
           ))}
-          <input
-            className="field"
-            style={{ maxWidth: 220, marginLeft: "auto", padding: "6px 12px", fontSize: 12 }}
-            placeholder="Filter..."
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
+          <form action="/requests" method="get" style={{ marginLeft: "auto" }}>
+            {activeFilter && activeFilter !== "all" && <input type="hidden" name="status" value={activeFilter} />}
+            <input
+              className="field"
+              name="q"
+              defaultValue={query}
+              style={{ maxWidth: 220, padding: "6px 12px", fontSize: 12 }}
+              placeholder="Search title / target / requester…"
+            />
+          </form>
         </div>
       )}
       <div className="glass" style={{ padding: 0, overflowX: "auto" }}>
@@ -72,7 +73,7 @@ export function RequestsTable({ records, filterable = false, initialQuery = "" }
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {records.map((r) => (
               <tr key={r.id}>
                 <td>
                   <Link href={`/requests/${r.id}`} style={{ color: "var(--text)", fontWeight: 600 }}>{r.title}</Link>
@@ -92,14 +93,14 @@ export function RequestsTable({ records, filterable = false, initialQuery = "" }
                 <td><Link href={`/requests/${r.id}`} style={{ fontSize: 12, color: "var(--cyan)" }}>Review</Link></td>
               </tr>
             ))}
-            {rows.length === 0 && (
+            {records.length === 0 && (
               <tr><td colSpan={7}>
                 <div className="empty-state">
-                  <h3>{q || filter !== "all" ? "No migrations match" : "No migrations yet"}</h3>
-                  <p>{q || filter !== "all"
+                  <h3>{query || activeFilter !== "all" ? "No migrations match" : "No migrations yet"}</h3>
+                  <p>{query || activeFilter !== "all"
                     ? "Adjust your filters."
                     : "Submit your first migration and the agent will analyze it."}</p>
-                  {!q && filter === "all" && (
+                  {!query && activeFilter === "all" && (
                     <Link href="/requests/new" className="btn btn-cyan btn-sm">+ Submit migration</Link>
                   )}
                 </div>

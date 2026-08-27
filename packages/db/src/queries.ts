@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, desc, sql, and, inArray } from "drizzle-orm";
+import { eq, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -92,16 +92,54 @@ function toIso(d: Date | null | undefined): string {
  * List all migration requests, hydrated with the latest artifact, blast
  * report, approval, and shadow run. Ordered by created_at DESC.
  */
-export async function listRequests(opts: { limit?: number; offset?: number } = {}): Promise<RequestRecord[]> {
+/** Server-side status groups for the requests list — MUST match the UI chips so
+ *  a filter reflects EVERY matching request, not only those on the current page. */
+const REQUEST_STATUS_GROUPS: Record<string, RequestStatus[]> = {
+  awaiting_approval: ["awaiting_approval"],
+  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "applying"],
+  applied: ["applied"],
+  blocked: ["blocked"],
+  rejected: ["rejected"],
+  failed: ["failed", "rolled_back"],
+};
+
+/** Build the shared WHERE for listRequests + countRequests so the filtered list
+ *  and its total count always agree. Applied in SQL, across all pages. */
+function requestFilterConditions(opts: { q?: string; status?: string }) {
+  const conds = [];
+  const group = opts.status && opts.status !== "all" ? REQUEST_STATUS_GROUPS[opts.status] : undefined;
+  if (group) conds.push(inArray(migrationRequest.status, group));
+  const q = opts.q?.trim();
+  if (q) {
+    const like = `%${q}%`;
+    conds.push(
+      or(
+        ilike(migrationRequest.title, like),
+        ilike(migrationRequest.requestedBy, like),
+        ilike(targetDatabase.connectionAlias, like),
+        ilike(targetDatabase.name, like),
+      ),
+    );
+  }
+  return conds;
+}
+
+export async function listRequests(
+  opts: { limit?: number; offset?: number; q?: string; status?: string } = {},
+): Promise<RequestRecord[]> {
   // Bounded by default so the list path can't grow unbounded with history.
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
+  const conds = requestFilterConditions(opts);
   const rows = await db
     .select()
     .from(migrationRequest)
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .leftJoin(approval, eq(approval.migrationRequestId, migrationRequest.id))
-    .orderBy(desc(migrationRequest.createdAt))
+    .where(conds.length ? and(...conds) : undefined)
+    // (created_at, id) is a TOTAL order — created_at alone is non-unique, so
+    // offset paging over ties would duplicate/skip rows between page requests.
+    .orderBy(desc(migrationRequest.createdAt), desc(migrationRequest.id))
     .limit(limit)
     .offset(offset);
 
@@ -862,9 +900,15 @@ export async function listAuditEventsForRequest(requestId: string, limit = 50): 
   return rows.map(toAuditRow);
 }
 
-/** Total number of migration requests (for accurate pagination totals). */
-export async function countRequests(): Promise<number> {
-  const [row] = await db.select({ count: sql<number>`count(*)::int` }).from(migrationRequest);
+/** Total number of migration requests MATCHING the same filter as listRequests,
+ *  so the displayed total and the paginated rows always agree. */
+export async function countRequests(opts: { q?: string; status?: string } = {}): Promise<number> {
+  const conds = requestFilterConditions(opts);
+  const [row] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(conds.length ? and(...conds) : undefined);
   return row?.count ?? 0;
 }
 

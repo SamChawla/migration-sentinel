@@ -44,9 +44,12 @@ export async function getSession(): Promise<Session | null> {
   const raw = jar.get(SESSION_COOKIE)?.value;
   const session = raw != null ? safeDecode(raw) : null;
   if (session === null || !credentialMatches(session)) return null;
-  const userRaw = jar.get(USER_COOKIE)?.value;
-  const user = userRaw != null ? safeDecode(userRaw) : null;
-  return { user: user || "approver" };
+  // SECURITY: the actor must NOT come from the client-supplied ms_auth cookie —
+  // it is unsigned, so any holder of the shared approver token could submit or
+  // approve as an arbitrary person and the audit log could never establish who
+  // performed a production action. There is a single shared token, so there is a
+  // single, SERVER-CONFIGURED approver identity.
+  return { user: process.env.APPROVER_IDENTITY?.trim() || "approver" };
 }
 
 export const SESSION_COOKIE_NAME = SESSION_COOKIE;

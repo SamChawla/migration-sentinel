@@ -47,7 +47,7 @@ export const DEMO_STEPS: DemoStep[] = [
     phase: "Dry-run",
     status: "dry_running",
     title: "Shadow dry-run + blast radius",
-    detail: "Schema-only shadow proves the rollback; row/lock estimates come from the target's planner statistics (no data copied).",
+    detail: "Schema-only shadow: the SCHEMA restores, but DROP COLUMN destroys data no down can recover — rollback is NOT proven (irreversible). Row/lock estimates come from the target's planner statistics (no data copied).",
     blast: {
       overallSeverity: "red",
       rowsAffected: 1204338,
