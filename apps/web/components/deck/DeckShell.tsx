@@ -111,7 +111,7 @@ export function DeckShell({
               {initialsOf(userName)}
             </button>
             {menuOpen && (
-              <div className="menu" style={{ left: "calc(100% + 8px)", right: "auto", bottom: 0, top: "auto" }}>
+              <div className="menu rail-menu">
                 <div className="menu-head">
                   <div style={{ fontWeight: 600 }}>{userName}</div>
                   <div style={{ fontSize: 11, color: "var(--muted)" }}>demo session</div>

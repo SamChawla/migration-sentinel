@@ -71,7 +71,10 @@ h3 { font-size: 15px; }
 
 /* ═══ App shell — Flight Deck ═════════════════════════════ */
 .deck {
-  display: grid; grid-template-columns: 82px 1fr; grid-template-rows: 52px 1fr; min-height: 100vh; position: relative;
+  /* Row 1 is `auto` (not a fixed 52px) so a HUD that wraps to two lines on a
+     narrow viewport grows the header track instead of overflowing the stage
+     below it; `.hud` keeps a 52px floor for the common single-line case. */
+  display: grid; grid-template-columns: 82px 1fr; grid-template-rows: auto 1fr; min-height: 100vh; position: relative;
   background: var(--space-0);
 }
 
@@ -79,6 +82,7 @@ h3 { font-size: 15px; }
 .hud {
   grid-column: 1 / -1; grid-row: 1;
   display: flex; align-items: center; gap: 16px; padding: 0 20px;
+  min-height: 52px; /* floor for the single-line case; grows if it wraps */
   background: var(--panel-2); border-bottom: 1px solid var(--line);
   box-shadow: var(--shadow-sm);
   position: sticky; top: 0; z-index: 40;
@@ -422,6 +426,9 @@ label.lbl {
   background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
   box-shadow: var(--shadow-lg); padding: 6px; font-size: 13px; animation: fadeIn .15s ease-out both;
 }
+/* Account menu anchored to the vertical instrument rail — opens to the right,
+   bottom-aligned. The ≤640px override flips it to open above the bottom rail. */
+.rail-menu { left: calc(100% + 8px); right: auto; bottom: 0; top: auto; }
 .menu-head { padding: 10px 12px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
 .menu-item {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -684,10 +691,13 @@ label.lbl {
   .mk-pipe-cell:last-child { border-bottom: none; }
   .mk-links a:not(.btn) { display: none; }
   .mk-footer-grid { grid-template-columns: 1fr; }
-  .deck { grid-template-columns: 1fr; grid-template-rows: 52px 1fr; }
+  .deck { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .rail { grid-column: 1; grid-row: 2; flex-direction: row; height: auto; position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; border-right: none; border-top: 1px solid var(--line); padding: 6px 10px; justify-content: space-around; }
   .rail-spacer { display: none; }
-  .rail-user { display: none; }
+  /* Keep the account trigger reachable on phones: it is the ONLY way to open
+     Settings / Home / Demo mode / Sign out, and `.hud-user` is already hidden
+     at ≤768px. Its menu is flipped to open upward, above the bottom rail. */
+  .rail-menu { left: auto; right: 8px; bottom: calc(100% + 12px); top: auto; }
   .stage { grid-column: 1; grid-row: 2; padding-bottom: 72px; }
 }
 
