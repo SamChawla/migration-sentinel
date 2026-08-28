@@ -13,10 +13,18 @@ const FILTERS = [
   { key: "failed", label: "Failed" },
 ] as const;
 
-function chipHref(status: string, q: string): string {
+// Encode a non-default sort so it survives filter/search navigation. Mirrors the
+// URL scheme sortHref emits: `sort` only off the default column, `dir` only off desc.
+function applySort(sp: URLSearchParams, sort: string, dir: string): void {
+  if (sort && sort !== "created_at") sp.set("sort", sort);
+  if (dir && dir !== "desc") sp.set("dir", dir);
+}
+
+function chipHref(status: string, q: string, sort: string, dir: string): string {
   const sp = new URLSearchParams();
   if (status && status !== "all") sp.set("status", status);
   if (q) sp.set("q", q);
+  applySort(sp, sort, dir);
   const qs = sp.toString();
   return qs ? `/requests?${qs}` : "/requests";
 }
@@ -49,8 +57,7 @@ export function RequestsTable({
     if (query) sp.set("q", query);
     if (activeFilter && activeFilter !== "all") sp.set("status", activeFilter);
     const nextDir = sort === col && dir === "desc" ? "asc" : "desc";
-    if (col !== "created_at") sp.set("sort", col);
-    if (nextDir !== "desc") sp.set("dir", nextDir);
+    applySort(sp, col, nextDir);
     const qs = sp.toString();
     return qs ? `/requests?${qs}` : "/requests";
   }
@@ -70,12 +77,15 @@ export function RequestsTable({
       {filterable && (
         <div className="filters">
           {FILTERS.map((f) => (
-            <Link key={f.key} href={chipHref(f.key, query)} className={`fchip${activeFilter === f.key ? " on" : ""}`}>
+            <Link key={f.key} href={chipHref(f.key, query, sort, dir)} className={`fchip${activeFilter === f.key ? " on" : ""}`}>
               {f.label}
             </Link>
           ))}
           <form action="/requests" method="get" style={{ marginLeft: "auto" }}>
             {activeFilter && activeFilter !== "all" && <input type="hidden" name="status" value={activeFilter} />}
+            {/* Carry the active sort through a search so it isn't reset to created_at desc. */}
+            {sort && sort !== "created_at" && <input type="hidden" name="sort" value={sort} />}
+            {dir && dir !== "desc" && <input type="hidden" name="dir" value={dir} />}
             <input
               className="field"
               name="q"
