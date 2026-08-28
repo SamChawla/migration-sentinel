@@ -78,6 +78,14 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
     }
   }
 
+  // Enter inside the add-connection fields must NOT bubble to the enclosing
+  // migration <form> (implicit submit) — it runs the test-and-add flow instead.
+  function onAddKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (!testing && alias.trim() && url.trim()) void testAndAdd();
+  }
+
   const selected = conns.find((c) => c.alias === value);
 
   return (
@@ -106,6 +114,9 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                 placeholder="Search databases…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
+                // This picker lives inside the New Migration <form>; Enter here
+                // would otherwise submit that form and start a migration.
+                onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
                 style={{ marginBottom: 8 }}
               />
               <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
@@ -152,8 +163,11 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div className="hud-label" style={{ margin: 0 }}>New connection</div>
-              <input className="field" placeholder="Alias (e.g. staging-db)" value={alias} onChange={(e) => setAlias(e.target.value)} />
-              <input className="field field-mono" placeholder="postgres://user:pass@host:5432/db" value={url} onChange={(e) => setUrl(e.target.value)} />
+              {/* Enter runs the add-connection flow (never the outer migration
+                  form): submit implicitly reaches the enclosing New Migration
+                  <form> and would start a migration against the old target. */}
+              <input className="field" placeholder="Alias (e.g. staging-db)" value={alias} onChange={(e) => setAlias(e.target.value)} onKeyDown={onAddKeyDown} />
+              <input className="field field-mono" placeholder="postgres://user:pass@host:5432/db" value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={onAddKeyDown} />
               {error && <div className="inline-error" role="alert">{error}</div>}
               <div style={{ display: "flex", gap: 8 }}>
                 <button type="button" className="btn btn-sm" onClick={() => { setAdding(false); setError(null); }}>Cancel</button>
