@@ -179,7 +179,7 @@ export default function DemoReplay() {
             <span style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--safe)" }} />
             <span className="mono" style={{ fontSize: 11, color: "var(--faint)", marginLeft: 6 }}>agent trace</span>
           </div>
-          <div ref={consoleRef} style={{ padding: "12px 14px", height: 340, overflowY: "auto", fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.7 }}>
+          <div ref={consoleRef} role="log" aria-live="polite" aria-relevant="additions" aria-label="Agent trace" style={{ padding: "12px 14px", height: 340, overflowY: "auto", fontFamily: "var(--font-mono)", fontSize: 12, lineHeight: 1.7 }}>
             {consoleLines.map((c, k) => (
               <div key={k} style={{ color: lineTone(c.line), whiteSpace: "pre-wrap", animation: "fadeIn .2s ease" }}>{c.line}</div>
             ))}
