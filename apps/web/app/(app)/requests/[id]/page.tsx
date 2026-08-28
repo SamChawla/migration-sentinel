@@ -78,21 +78,27 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
  *  migration SQL. Uses the REAL parsed table name; borrows fixture columns only
  *  for tables we have a fixture for, otherwise shows only the columns the
  *  migration touches (rather than fabricating an unrelated schema). */
+// Sentinel for "the migration's table could not be identified". It must NOT be a
+// real fixture table, so it never matches SCHEMA_FKS and never fabricates a FK.
+const UNPARSED_TABLE = "public.?";
+
 function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   const sql = upSql.toLowerCase();
 
   const tableMatch =
     sql.match(/(?:drop|alter|truncate)\s+table\s+(?:only\s+)?(?:public\.)?(\w+)/) ||
+    sql.match(/create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)/) ||
     sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
     sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
   const parsed = tableMatch?.[1];
   const known = parsed && parsed in DEMO_TABLES;
 
-  // Use the REAL parsed table name. Only borrow the fixture COLUMNS when the table
-  // is one we actually have a fixture for — otherwise start EMPTY so a migration
-  // against an unknown table isn't fabricated as public.users with unrelated
-  // columns (the op-specific logic below still highlights the columns it touches).
-  const table = `public.${parsed ?? "users"}`;
+  // Use the REAL parsed table name. When nothing parsed, fall back to an explicit
+  // UNPARSED sentinel — NOT public.users — so an unrecognized statement can't
+  // inherit the users fixture and fabricate the orders→users FK. Only borrow the
+  // fixture COLUMNS for a table we actually have a fixture for; otherwise start
+  // EMPTY (the op-specific logic below still highlights the columns it touches).
+  const table = parsed ? `public.${parsed}` : UNPARSED_TABLE;
   let columns: SceneCol[] = known
     ? DEMO_TABLES[parsed as keyof typeof DEMO_TABLES].map((c) => ({ ...c, affected: "none" }))
     : [];
@@ -194,7 +200,10 @@ const SCHEMA_FKS: FkEdge[] = [
  *  tables + the edges between them, so the 3D shows how the change is linked. */
 function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
   const primary = db3dModel(upSql);
-  const primaryName = primary.table; // e.g. "public.users"
+  const primaryName = primary.table; // a real "public.<table>", or UNPARSED_TABLE
+  // Only a confidently identified table drives FK-neighbour expansion — an
+  // unparsed statement must not inherit a fixture's relationships.
+  const parsedTarget = primaryName !== UNPARSED_TABLE;
   // If the parse couldn't attribute columns but the table IS a known fixture,
   // still show its columns (so the card isn't empty and FK links can anchor).
   let primaryCols = primary.columns;
@@ -204,7 +213,9 @@ function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
   }
   const tables: SceneTable[] = [{ name: primaryName, columns: primaryCols, role: "primary" }];
 
-  const edges = SCHEMA_FKS.filter((e) => e.fromTable === primaryName || e.toTable === primaryName);
+  const edges = parsedTarget
+    ? SCHEMA_FKS.filter((e) => e.fromTable === primaryName || e.toTable === primaryName)
+    : [];
   const neighbours = new Set<string>();
   for (const e of edges) neighbours.add(e.fromTable === primaryName ? e.toTable : e.fromTable);
 
