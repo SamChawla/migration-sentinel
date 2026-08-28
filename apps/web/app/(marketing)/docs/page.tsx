@@ -12,8 +12,8 @@ const ARCH = [
 ];
 
 const STEPS = [
-  { n: "1", name: "Intake", desc: "A migration request enters the system — from a developer's plain-English description, a PR diff, or direct SQL." },
-  { n: "2", name: "Generate", desc: "The agent writes a safe up/down migration pair. For dangerous patterns (SET NOT NULL with existing NULLs), it generates a two-phase approach." },
+  { n: "1", name: "Intake", desc: "A migration request enters the system — either a developer's plain-English description or direct SQL." },
+  { n: "2", name: "Generate", desc: "For a plain-English request the agent writes a safe up/down migration pair — and for dangerous patterns (SET NOT NULL with existing NULLs) a two-phase approach. Direct SQL is taken as submitted and carried straight into review." },
   { n: "3", name: "Qodo review", desc: "The generated SQL is sent for automated code review. Findings are attached to the blast report for the human approver." },
   { n: "4", name: "Shadow dry-run", desc: "The migration runs on a schema-only shadow clone. Blast radius (rows affected, lock type, downtime) is estimated from the target's own planner statistics — no production data is copied. Rollback is tested on the clone." },
   { n: "5", name: "Human gate", desc: "The agent pauses. The blast report, rollback proof, and Qodo findings are presented. RED severity requires typed confirmation. The model cannot proceed without a human decision.", gate: true },
@@ -25,7 +25,7 @@ const SAFETY = [
   { rule: "The model cannot self-approve", detail: "The gate is enforced in packages/core/gate.ts, independent of the agent. Even if the agent prompt is compromised, apply() throws without a human decision." },
   { rule: "RED severity requires typed confirmation", detail: "Irreversible operations (DROP, TRUNCATE, data-type narrowing) require the approver to type the exact confirmation word. The button is disabled until the input matches." },
   { rule: "Rollback is proven, not assumed", detail: "The down migration is executed on a shadow clone and the schema is diffed back to the original. If the diff doesn't match, the rollback is marked unproven." },
-  { rule: "Read-only query guard", detail: "All pre-flight data probes go through a read-only guard that rejects any statement containing write operations. Catalog queries only." },
+  { rule: "Read-only query guard", detail: "Every pre-flight probe goes through a guard that rejects any statement with a write operation — only a single read-only SELECT/WITH runs. Probes read the target's own rows (e.g. counting would-be duplicate or NULL values) to prove the migration won't fail on real data; nothing is copied or mutated." },
   { rule: "Every signal feeds the gate", detail: "Blast classifier, rollback verifier, read-only guard, and pre-flight checks each feed the deterministic disposition. A whole-dataset destruction is refused outright; other adverse signals escalate the gate to a typed confirmation." },
 ];
 
