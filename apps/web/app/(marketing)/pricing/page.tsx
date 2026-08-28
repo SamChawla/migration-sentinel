@@ -9,7 +9,6 @@ const TIERS = [
     period: "forever",
     desc: "Full safety pipeline for individual developers and small teams.",
     cta: "Get started",
-    ctaClass: "btn btn-lg",
     features: [
       "All 7 pipeline stages",
       "Human approval gate",
@@ -27,7 +26,6 @@ const TIERS = [
     period: "per month",
     desc: "For teams that need shared dashboards and role-based approvals.",
     cta: "Start free trial",
-    ctaClass: "btn btn-cyan btn-lg",
     highlight: true,
     features: [
       "Everything in Open Source",
@@ -46,7 +44,6 @@ const TIERS = [
     period: "annual contract",
     desc: "On-prem deployment, compliance controls, and dedicated support.",
     cta: "Contact sales",
-    ctaClass: "btn btn-lg",
     features: [
       "Everything in Team",
       "Self-hosted / air-gapped deployment",
@@ -63,35 +60,31 @@ const TIERS = [
 export default function Pricing() {
   return (
     <>
-      <header className="hero" style={{ padding: "4rem 2rem 3rem" }}>
-        <span style={{ display: "inline-block", padding: "4px 14px", borderRadius: 999, border: "1px solid var(--cyan-deep)", color: "var(--cyan)", fontSize: 12, fontWeight: 500 }}>
-          Pricing
-        </span>
-        <h1>
-          Start free. <span className="accent">Scale when you&apos;re ready.</span>
-        </h1>
-        <p className="lead">
+      <header className="ed-page-header">
+        <span className="ed-tag">Pricing</span>
+        <h1>Start free. <em>Scale when you&apos;re ready.</em></h1>
+        <p className="ed-lead">
           The safety pipeline is fully open source. Paid plans add team features, compliance controls, and dedicated support.
         </p>
       </header>
 
-      <section className="mk-section">
-        <div className="pricing-grid">
+      <section className="ed-section" style={{ paddingTop: 0 }}>
+        <div className="ed-pricing-grid">
           {TIERS.map((t) => (
-            <div key={t.name} className={`glass pricing-card${t.highlight ? " pricing-highlight" : ""}`}>
-              {t.highlight && <div className="pricing-badge">Most popular</div>}
-              <h3 className="pricing-name">{t.name}</h3>
-              <div className="pricing-price">
-                <span className="pricing-amount">{t.price}</span>
-                <span className="pricing-period">/ {t.period}</span>
+            <div key={t.name} className={`ed-pricing-card${t.highlight ? " highlight" : ""}`}>
+              {t.highlight && <div className="ed-pricing-badge">Most popular</div>}
+              <div className="ed-pricing-name">{t.name}</div>
+              <div style={{ marginBottom: 4 }}>
+                <span className="ed-pricing-amount">{t.price}</span>
+                <span className="ed-pricing-period">/ {t.period}</span>
               </div>
-              <p style={{ fontSize: ".9rem", lineHeight: 1.6, color: "var(--muted)" }}>{t.desc}</p>
-              <Link href="/login" className={t.ctaClass} style={{ width: "100%", marginTop: "1rem" }}>
+              <p className="ed-pricing-desc">{t.desc}</p>
+              <Link href="/login" className="ed-pricing-cta">
                 {t.cta}
               </Link>
-              <ul className="pricing-features">
+              <ul className="ed-pricing-features">
                 {t.features.map((f) => (
-                  <li key={f}><span className="pricing-check">✓</span> {f}</li>
+                  <li key={f}><span className="ed-pricing-check">{"✓"}</span> {f}</li>
                 ))}
               </ul>
             </div>
@@ -99,23 +92,32 @@ export default function Pricing() {
         </div>
       </section>
 
-      <div className="mk-stats-band">
-        <div className="mk-stats" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-          <div className="mk-stat"><div className="v">100%</div><div className="l">open source core</div></div>
-          <div className="mk-stat"><div className="v">0</div><div className="l">production data ever cloned</div></div>
-          <div className="mk-stat"><div className="v">56/56</div><div className="l">safety tests passing</div></div>
+      <div className="ed-stats-band">
+        <div className="ed-stats">
+          <div>
+            <div className="ed-stat-value">100%</div>
+            <div className="ed-stat-label">open source core</div>
+          </div>
+          <div>
+            <div className="ed-stat-value">0</div>
+            <div className="ed-stat-label">production data ever cloned</div>
+          </div>
+          <div>
+            <div className="ed-stat-value">56/56</div>
+            <div className="ed-stat-label">safety tests passing</div>
+          </div>
         </div>
       </div>
 
-      <section className="mk-section" style={{ textAlign: "center" }}>
+      <section className="ed-section-cta">
         <h2>Questions?</h2>
-        <p className="sect-sub">
+        <p>
           Every plan includes the full safety pipeline — human gate, blast analysis, rollback proof, and audit log.
           Paid plans add collaboration, compliance, and support.
         </p>
-        <div className="hero-ctas">
-          <Link href="/demo" className="btn btn-cyan btn-lg">Try the demo</Link>
-          <Link href="/docs" className="btn btn-lg">Read the docs</Link>
+        <div className="ed-cta-actions">
+          <Link href="/demo" className="btn-dark">Try the demo</Link>
+          <Link href="/docs" className="btn-ghost">Read the docs</Link>
         </div>
       </section>
     </>
