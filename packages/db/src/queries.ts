@@ -18,6 +18,7 @@ import {
   approval,
   applyRun,
   auditEvent,
+  githubLink,
 } from "./schema";
 import type {
   RequestStatus,
@@ -1201,6 +1202,106 @@ export async function finishApplyRun(
       rolledBackAt: input.rolledBackAt ?? null,
     })
     .where(eq(applyRun.id, id));
+}
+
+// ── GitHub link (PR3) ────────────────────────────────────────────────────
+
+export interface GithubLinkRow {
+  id: string;
+  migrationRequestId: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  filePath: string;
+  prTitle: string | null;
+  prState: string | null;
+  headSha: string | null;
+  checksState: string | null;
+  htmlUrl: string | null;
+  lastSyncedAt: string | null;
+  commentId: number | null;
+}
+
+function toGithubLinkRow(r: typeof githubLink.$inferSelect): GithubLinkRow {
+  return {
+    id: r.id,
+    migrationRequestId: r.migrationRequestId,
+    repo: r.repo,
+    prNumber: r.prNumber,
+    commitSha: r.commitSha,
+    filePath: r.filePath,
+    prTitle: r.prTitle,
+    prState: r.prState,
+    headSha: r.headSha,
+    checksState: r.checksState,
+    htmlUrl: r.htmlUrl,
+    lastSyncedAt: r.lastSyncedAt ? r.lastSyncedAt.toISOString() : null,
+    commentId: r.commentId,
+  };
+}
+
+export async function createGithubLink(input: {
+  migrationRequestId: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  filePath: string;
+  prTitle?: string | null;
+  prState?: string | null;
+  headSha?: string | null;
+  checksState?: string | null;
+  htmlUrl?: string | null;
+}): Promise<GithubLinkRow> {
+  const [row] = await db
+    .insert(githubLink)
+    .values({
+      migrationRequestId: input.migrationRequestId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      commitSha: input.commitSha,
+      filePath: input.filePath,
+      prTitle: input.prTitle ?? null,
+      prState: input.prState ?? null,
+      headSha: input.headSha ?? null,
+      checksState: input.checksState ?? null,
+      htmlUrl: input.htmlUrl ?? null,
+      lastSyncedAt: new Date(),
+    })
+    .returning();
+  return toGithubLinkRow(row);
+}
+
+export async function getGithubLink(requestId: string): Promise<GithubLinkRow | null> {
+  const rows = await db
+    .select()
+    .from(githubLink)
+    .where(eq(githubLink.migrationRequestId, requestId))
+    .limit(1);
+  return rows[0] ? toGithubLinkRow(rows[0]) : null;
+}
+
+/** Refresh the cached PR metadata after a live GitHub read. */
+export async function updateGithubLinkSync(
+  requestId: string,
+  sync: {
+    prTitle?: string | null;
+    prState?: string | null;
+    headSha?: string | null;
+    checksState?: string | null;
+    htmlUrl?: string | null;
+  },
+): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({ ...sync, lastSyncedAt: new Date() })
+    .where(eq(githubLink.migrationRequestId, requestId));
+}
+
+export async function setGithubLinkCommentId(requestId: string, commentId: number): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({ commentId })
+    .where(eq(githubLink.migrationRequestId, requestId));
 }
 
 // ── Audit ────────────────────────────────────────────────────────────────
