@@ -400,6 +400,9 @@ export interface CreateRequestInput {
   /** Natural-language intent — when set (and upSql is empty) the request is an
    *  nl_intent with NO artifact, so the agent generates the {up,down} pair. */
   intent?: string;
+  /** GitHub-PR intake — when set the request is a github_pr whose upSql the
+   *  SERVER read from the PR at this head SHA (never client-supplied). */
+  pr?: { url: string; repo: string; file: string; prNumber: number; headSha: string };
   requestedBy?: string;
 }
 
@@ -429,20 +432,25 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
     }
 
     const isIntent = !input.upSql.trim() && Boolean(input.intent?.trim());
+    const isPr = Boolean(input.pr);
     const [req] = await tx
       .insert(migrationRequest)
       .values({
         targetDatabaseId: targetId,
-        intakeKind: isIntent ? "nl_intent" : "raw_sql",
-        intakePayload: isIntent ? { intent: input.intent } : { sql: input.upSql },
+        intakeKind: isPr ? "github_pr" : isIntent ? "nl_intent" : "raw_sql",
+        intakePayload: isPr
+          ? { sql: input.upSql, pr: input.pr }
+          : isIntent
+            ? { intent: input.intent }
+            : { sql: input.upSql },
         title: input.title,
         status: "received",
         requestedBy: input.requestedBy ?? "unknown",
       })
       .returning();
 
-    // Raw SQL → persist it as the v1 artifact immediately. An nl_intent gets NO
-    // artifact here, so runAgentPipeline's generation stage produces {up,down}.
+    // Raw SQL / PR-sourced SQL → persist it as the v1 artifact immediately. An
+    // nl_intent gets NO artifact here, so runAgentPipeline generates {up,down}.
     if (!isIntent && input.upSql) {
       await tx.insert(generatedArtifact).values({
         migrationRequestId: req.id,
@@ -450,7 +458,7 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
         upSql: input.upSql,
         downSql: input.downSql,
         reversibility: "reversible",
-        model: "user-supplied",
+        model: isPr ? "github-pr" : "user-supplied",
       });
     }
 
