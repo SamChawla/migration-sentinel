@@ -19,6 +19,7 @@ import {
   getLatestArtifact,
   getRequestTargetUrl,
   getApplyGuardContext,
+  getGithubLink,
   insertApplyRun,
   finishApplyRun,
   setRequestStatus,
@@ -206,6 +207,17 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   if (!guardCtx || !promotionEligible(guardCtx)) {
     throw new Error(
       "applyMigration: promotion locked — a prod migration cannot be applied until the same SQL was applied on a lower environment in its promotion group.",
+    );
+  }
+
+  // EXPORT-MERGE GATE (doc 11 §5), DB-only mirror of the apply route's live
+  // check: once an export PR is recorded for this request, the apply is
+  // released ONLY by its verified merge. No network here — the route verifies
+  // the merge live and persists it; this guard refuses on the record alone.
+  const ghLink = await getGithubLink(requestId);
+  if (ghLink?.exportPrNumber != null && ghLink.exportPrState !== "merged") {
+    throw new Error(
+      `applyMigration: export PR #${ghLink.exportPrNumber} (${ghLink.repo}) is not merged — the GitHub merge (gate 2) has not released this migration.`,
     );
   }
 

@@ -1,5 +1,19 @@
-import { describe, it, expect } from "vitest";
-import { isNonTransactional, findExecutorSubversion } from "../src/apply";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { isNonTransactional, findExecutorSubversion, applyMigration } from "../src/apply";
+
+vi.mock("@sentinel/db/queries", () => ({
+  getRequest: vi.fn(),
+  getLatestArtifact: vi.fn(),
+  getRequestTargetUrl: vi.fn(),
+  getApplyGuardContext: vi.fn(),
+  getGithubLink: vi.fn(),
+  insertApplyRun: vi.fn(),
+  finishApplyRun: vi.fn(),
+  setRequestStatus: vi.fn(),
+  claimRequestForApply: vi.fn(),
+  insertAuditEvent: vi.fn(),
+}));
+import * as queries from "@sentinel/db/queries";
 
 /**
  * Regression tests for the Qodo PR #4 finding on the guarded apply executor:
@@ -110,5 +124,60 @@ describe("findExecutorSubversion — guarded-apply contract (R6 #1/#2)", () => {
   it("does NOT flag END inside a function body", () => {
     const sql = "CREATE FUNCTION f() RETURNS int AS $$ BEGIN RETURN 1; END $$ LANGUAGE plpgsql";
     expect(findExecutorSubversion(sql)).toBeNull();
+  });
+});
+
+/**
+ * PR4 — the pre-claim guards of applyMigration: the export-merge gate (DB-only)
+ * and the promotion lock, plus unchanged behaviour when neither applies. The
+ * query layer is mocked; each scenario stops BEFORE the one-shot claim (or at
+ * it), so no Postgres connection is ever attempted.
+ */
+describe("applyMigration — pre-claim guards (PR4)", () => {
+  const UP = "ALTER TABLE t ADD COLUMN x int;";
+  const q = queries as unknown as Record<string, ReturnType<typeof vi.fn>>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    q.getRequest.mockResolvedValue({
+      id: "r1",
+      title: "add col",
+      reversibility: "reversible",
+      approval: { decision: "approved", requiresTypedConfirm: false, expectedConfirm: null },
+    });
+    q.getLatestArtifact.mockResolvedValue({ id: "a1", version: 1, upSql: UP, downSql: "" });
+    q.getRequestTargetUrl.mockResolvedValue("postgres://postgres:postgres@localhost:5433/prod");
+    q.getApplyGuardContext.mockResolvedValue({ environment: "dev", upSql: UP, siblings: [] });
+    q.getGithubLink.mockResolvedValue(null);
+    // The claim refuses — every scenario that legitimately REACHES the claim
+    // ends here with a definite non-throw failure, proving the guards passed.
+    q.claimRequestForApply.mockResolvedValue(false);
+  });
+
+  it("refuses an UNMERGED export PR — gate 2 has not released the migration", async () => {
+    q.getGithubLink.mockResolvedValue({ repo: "o/r", exportPrNumber: 12, exportPrState: "open" });
+    await expect(applyMigration("r1")).rejects.toThrow(/not merged/);
+    expect(q.claimRequestForApply).not.toHaveBeenCalled();
+  });
+
+  it("refuses a prod request with no lower-env applied sibling (promotion lock)", async () => {
+    q.getApplyGuardContext.mockResolvedValue({ environment: "prod", upSql: UP, siblings: [] });
+    await expect(applyMigration("r1")).rejects.toThrow(/promotion locked/);
+    expect(q.claimRequestForApply).not.toHaveBeenCalled();
+  });
+
+  it("a MERGED export PR passes the gate and reaches the claim", async () => {
+    q.getGithubLink.mockResolvedValue({ repo: "o/r", exportPrNumber: 12, exportPrState: "merged" });
+    const result = await applyMigration("r1");
+    expect(q.claimRequestForApply).toHaveBeenCalled();
+    expect(result.status).toBe("failed"); // the mocked claim refused — nothing ran
+    expect(result.error).toMatch(/not in an applicable state/);
+  });
+
+  it("no link + non-prod env → behaviour unchanged: straight to the claim", async () => {
+    const result = await applyMigration("r1");
+    expect(q.claimRequestForApply).toHaveBeenCalled();
+    expect(result.status).toBe("failed");
+    expect(result.error).toMatch(/not in an applicable state/);
   });
 });
