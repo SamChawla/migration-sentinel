@@ -53,15 +53,15 @@ export default async function Migrations({
       {pageCount > 1 && (
         <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center", marginTop: 16 }}>
           {page > 1 ? (
-            <Link href={pageHref(page - 1)} className="btn btn-sm">← Newer</Link>
+            <Link href={pageHref(page - 1)} className="btn btn-sm">← Previous</Link>
           ) : (
-            <span className="btn btn-sm" aria-disabled style={{ opacity: 0.4, pointerEvents: "none" }}>← Newer</span>
+            <span className="btn btn-sm" aria-disabled style={{ opacity: 0.4, pointerEvents: "none" }}>← Previous</span>
           )}
           <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{page} / {pageCount}</span>
           {page < pageCount ? (
-            <Link href={pageHref(page + 1)} className="btn btn-sm">Older →</Link>
+            <Link href={pageHref(page + 1)} className="btn btn-sm">Next →</Link>
           ) : (
-            <span className="btn btn-sm" aria-disabled style={{ opacity: 0.4, pointerEvents: "none" }}>Older →</span>
+            <span className="btn btn-sm" aria-disabled style={{ opacity: 0.4, pointerEvents: "none" }}>Next →</span>
           )}
         </div>
       )}
