@@ -461,6 +461,10 @@
   margin-bottom: 16px;
 }
 .comparison-header p { font-size: 15px; color: var(--ink-2); line-height: 1.7; }
+/* Contain the table's intrinsic width at EVERY viewport — seven non-wrapping
+   columns can exceed the section well above the phone breakpoint, and the
+   scroll must happen here, never at page level. */
+.comp-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .comp-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .comp-table thead th {
   text-align: left; font-size: 12px; font-weight: 600;
@@ -1057,7 +1061,13 @@
   .ed-pricing-card { border-right: none; border-bottom: 1px solid var(--border); }
   .ed-pricing-card:last-child { border-bottom: none; }
   .ed-stack-grid { grid-template-columns: repeat(2, 1fr); }
+  /* Re-derive the separators for two columns: undo the desktop 3-col rules
+     (item 3 keeps its right divider; only the final row — items 5,6 — drops
+     its bottom border). Order matters: the restores precede the removals. */
+  .ed-stack-item:nth-child(3n) { border-right: 1px solid var(--border); }
   .ed-stack-item:nth-child(2n) { border-right: none; }
+  .ed-stack-item:nth-child(n+4) { border-bottom: 1px solid var(--border); }
+  .ed-stack-item:nth-child(n+5) { border-bottom: none; }
 }
 @media (max-width: 640px) {
   .ed-hero { padding: 64px 20px 48px; }
@@ -1066,7 +1076,6 @@
   .pipeline, .capabilities, .positioning, .comparison, .demo, .ed-footer { padding-left: 20px; padding-right: 20px; }
   .ed-section, .ed-page-header, .ed-section-cta { padding-left: 20px; padding-right: 20px; }
   .ed-section-alt { padding-left: 20px; padding-right: 20px; }
-  .comp-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .pipeline-steps { grid-template-columns: repeat(2, 1fr); }
   .pipeline-steps .p-step:nth-child(2n) { border-right: none; }
   .pipeline-steps .p-step:nth-child(n+3) { border-top: 1px solid var(--border); }
@@ -1079,6 +1088,11 @@
   .ed-stats { grid-template-columns: 1fr; gap: 24px; }
   .ed-stack-grid { grid-template-columns: 1fr; }
   .ed-stack-item { border-right: none !important; }
+  /* One column: every item keeps a bottom separator except the last.
+     nth-child(n) matches the nth-child specificity of the wider-breakpoint
+     removals so these later rules win the cascade. */
+  .ed-stack-item:nth-child(n) { border-bottom: 1px solid var(--border); }
+  .ed-stack-item:nth-child(n):last-child { border-bottom: none; }
   .ed-cta-actions { flex-direction: column; }
   .ed-step { grid-template-columns: 40px 1fr; gap: 14px; }
 }
