@@ -22,6 +22,11 @@ export const requestStatus = pgEnum("request_status", [
   "received", "generating", "reviewing", "dry_running",
   "awaiting_approval", "blocked", "approved", "rejected",
   "applying", "applied", "rolled_back", "failed",
+  // PR4 two-gate prod apply: approved → awaiting_merge (export PR open on
+  // GitHub) → approved (merge verified live) → applying. Added in its OWN
+  // migration — Postgres can't use a new enum value in the transaction that
+  // adds it, so nothing else may share that migration file.
+  "awaiting_merge",
 ]);
 export const intakeKind = pgEnum("intake_kind", ["nl_intent", "raw_sql", "github_pr"]);
 export const reversibility = pgEnum("reversibility", ["reversible", "lossy", "irreversible"]);
@@ -261,6 +266,14 @@ export const githubLink = pgTable(
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
     /** The Sentinel verdict comment's id — updates are idempotent via PATCH. */
     commentId: bigint("comment_id", { mode: "number" }),
+    // PR4 export gate: the branch/PR Sentinel opened with {up,down,report} on
+    // prod approval. The apply unlocks only once export_pr_state = 'merged'
+    // (verified live by the apply route; the DB guard re-checks it offline).
+    exportBranch: text("export_branch"),
+    exportPrNumber: integer("export_pr_number"),
+    exportPrUrl: text("export_pr_url"),
+    exportPrState: text("export_pr_state"),
+    exportMergedAt: timestamp("export_merged_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

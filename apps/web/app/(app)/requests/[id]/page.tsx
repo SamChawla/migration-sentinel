@@ -30,7 +30,7 @@ function phaseIndex(r: PhaseRecord): number {
     case "received": case "generating": return 0;
     case "reviewing": return 1;
     case "dry_running": return 2;
-    case "awaiting_approval": case "approved": case "rejected": case "blocked": return 3;
+    case "awaiting_approval": case "approved": case "rejected": case "blocked": case "awaiting_merge": return 3;
     case "applying": case "applied": case "rolled_back": return 4;
     case "failed":
       // A failure can happen at ANY phase — infer the furthest one reached from

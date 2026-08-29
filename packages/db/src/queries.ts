@@ -103,7 +103,7 @@ function toIso(d: Date | null | undefined): string {
  *  a filter reflects EVERY matching request, not only those on the current page. */
 const REQUEST_STATUS_GROUPS: Record<string, RequestStatus[]> = {
   awaiting_approval: ["awaiting_approval"],
-  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "applying"],
+  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "awaiting_merge", "applying"],
   applied: ["applied"],
   blocked: ["blocked"],
   rejected: ["rejected"],
