@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Client } from "pg";
 import { listTargetDatabases, addTargetConnection } from "@sentinel/db/queries";
+import { ENV_ORDER, type DbEnvironment } from "@sentinel/core";
 import { getSession } from "@/lib/auth";
 
 const PROBE_DEADLINE_MS = 8000;
@@ -62,11 +63,18 @@ export async function POST(req: Request) {
   const body = await req.json().catch(() => ({}));
   const alias = typeof body.alias === "string" ? body.alias.trim() : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
+  const environment = typeof body.environment === "string" ? body.environment.trim() : "dev";
   if (!alias || alias.length > 64 || !/^[\w .:-]+$/.test(alias)) {
     return NextResponse.json({ error: "A short alias (letters, numbers, . : - _) is required." }, { status: 400 });
   }
   if (!/^postgres(ql)?:\/\//i.test(url)) {
     return NextResponse.json({ error: "A postgres:// connection URL is required." }, { status: 400 });
+  }
+  if (!(ENV_ORDER as readonly string[]).includes(environment)) {
+    return NextResponse.json(
+      { error: `environment must be one of: ${ENV_ORDER.join(", ")}.` },
+      { status: 400 },
+    );
   }
 
   // Read-only reachability probe (bounded end-to-end) — proves we can reach the
@@ -78,7 +86,7 @@ export async function POST(req: Request) {
 
   // Insert-only: refuse to reuse an alias so an "add" never reroutes existing
   // requests that reference that target row.
-  const added = await addTargetConnection({ alias, url });
+  const added = await addTargetConnection({ alias, url, environment: environment as DbEnvironment });
   if (!added.ok) {
     return NextResponse.json({ error: `A connection named "${alias}" already exists — select it from the list.` }, { status: 409 });
   }
