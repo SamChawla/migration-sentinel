@@ -3,7 +3,10 @@ import {
   getRequest,
   getTrueforgeSession,
   getApplyGuardContext,
+  getGithubLink,
   recordApproval,
+  recordExportPr,
+  transitionRequestStatus,
   resetApproval,
   insertAuditEvent,
   setRequestStatus,
@@ -13,10 +16,16 @@ import {
   GateError,
   escalateForEnvironment,
   promotionEligible,
+  buildVerdictComment,
   type GateDisposition,
 } from "@sentinel/core";
 import { classifyMigration } from "@sentinel/shadow";
-import { applyMigration, resolveApplyGate } from "@sentinel/agent";
+import {
+  applyMigration,
+  resolveApplyGate,
+  createGithubClient,
+  exportMigrationPr,
+} from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -232,6 +241,101 @@ export async function POST(req: Request) {
       detail: `Approved — "${rec.title}". Handing to the guarded apply executor.`,
       tone: "green",
     });
+
+    // ── PR4 EXPORT GATE (doc 11 §5): a PROD approval with a linked repo and a
+    // configured token does NOT apply. Sentinel exports {up, down, report} on
+    // a branch, opens the gate-2 PR, and parks the request in awaiting_merge —
+    // the human merge on GitHub is what releases the apply. The TrueForge
+    // pause deliberately stays open: the apply has not been released yet.
+    if (rec.environment === "prod") {
+      const ghLink = await getGithubLink(requestId);
+      const ghToken = process.env.GITHUB_TOKEN?.trim();
+      if (ghLink && ghToken) {
+        try {
+          const gh = createGithubClient({ token: ghToken });
+          const report = buildVerdictComment({
+            requestId: rec.id,
+            title: rec.title,
+            severity: rec.overallSeverity,
+            environment: rec.environment,
+            rollbackVerified: rec.rollbackVerified,
+            reversibility: rec.reversibility,
+            rowsAffected: rec.rowsAffected,
+            findings: rec.findings.map((f) => ({ statement: f.statement, severity: f.severity, note: f.note })),
+            qodo: { verdict: rec.qodoVerdict, findings: rec.qodoFindings },
+            consoleUrl: `${new URL(req.url).origin}/requests/${rec.id}`,
+          });
+          const exported = await exportMigrationPr(gh, {
+            repo: ghLink.repo,
+            requestId: rec.id,
+            title: rec.title,
+            upSql: rec.upSql,
+            downSql: rec.downSql,
+            report,
+          });
+          await recordExportPr(requestId, {
+            branch: exported.branch,
+            prNumber: exported.prNumber,
+            prUrl: exported.prUrl,
+          });
+          // Guarded approved → awaiting_merge — if a concurrent path already
+          // moved the request, report the real state instead of pretending.
+          const parked = await transitionRequestStatus(requestId, "approved", "awaiting_merge");
+          if (!parked) {
+            const fresh = await getRequest(requestId);
+            return NextResponse.json(
+              { error: `Export PR opened (${exported.prUrl}) but the request already moved to ${fresh?.status ?? "unknown"}.` },
+              { status: 409 },
+            );
+          }
+          try {
+            await insertAuditEvent({
+              migrationRequestId: requestId,
+              actor: "sentinel.gate",
+              action: "export.pr_opened",
+              detail: `Exported to ${ghLink.repo}#${exported.prNumber} (${exported.branch}) — awaiting the source-of-truth merge (gate 2). No apply has run.`,
+              tone: "info",
+              payload: { prUrl: exported.prUrl, branch: exported.branch },
+            });
+          } catch (auditErr) {
+            console.error(`[approvals] export audit write failed for ${requestId}:`, auditErr);
+          }
+          return NextResponse.json({ ok: true, status: "awaiting_merge", prUrl: exported.prUrl });
+        } catch (exportErr) {
+          // Existing unstrand pattern: the approval stands but the export leg
+          // failed — land the request in 'failed' (never limbo) and say why.
+          await transitionRequestStatus(requestId, "approved", "failed").catch(() => {});
+          await insertAuditEvent({
+            migrationRequestId: requestId,
+            actor: "sentinel.gate",
+            action: "export.failed",
+            detail: `Export PR could not be opened: ${(exportErr as Error).message}`,
+            tone: "red",
+          }).catch(() => {});
+          return NextResponse.json(
+            { ok: false, status: "failed", error: `Export failed: ${(exportErr as Error).message}` },
+            { status: 502 },
+          );
+        }
+      }
+      // Prod WITHOUT an export path (no linked repo, or no token): the direct
+      // apply below still runs — loudly audited so nobody mistakes it for the
+      // two-gate flow.
+      try {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.gate",
+          action: "apply.direct_prod",
+          detail: ghLink
+            ? "PROD DIRECT APPLY — a repo is linked but GITHUB_TOKEN is not configured, so the export gate is unavailable."
+            : "PROD DIRECT APPLY — no repo linked to this request; the GitHub merge gate is skipped.",
+          tone: "red",
+        });
+      } catch (auditErr) {
+        console.error(`[approvals] direct_prod audit write failed for ${requestId}:`, auditErr);
+      }
+    }
+
     // Phase A: the decision travels through TrueForge's own protocol — resolve
     // the paused apply_migration turn with `user.tool_approval: allow`, but ONLY
     // after the deterministic core gate passes again (assertGate below re-runs

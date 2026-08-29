@@ -23,7 +23,9 @@ function stageOf(status: RequestStatus): number {
     case "reviewing": return 2;
     case "dry_running": return 3;
     case "awaiting_approval": return 4;
-    case "blocked": case "approved": case "rejected": return 4;
+    // awaiting_merge is still at the human gate — gate 2 (the GitHub merge)
+    // hasn't released the apply yet.
+    case "blocked": case "approved": case "rejected": case "awaiting_merge": return 4;
     case "applying": return 5;
     case "applied": case "failed": case "rolled_back": return 6;
   }

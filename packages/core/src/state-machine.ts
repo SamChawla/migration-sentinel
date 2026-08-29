@@ -15,7 +15,12 @@ const TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   // Blocked is a dead end for THIS migration: the operator can close it out
   // (rejected), but it can never be approved/applied.
   blocked: ["rejected"],
-  approved: ["applying"],
+  // Gate 2 (PR4): a prod + linked-repo approval EXPORTS the migration as a PR
+  // instead of applying — approved → awaiting_merge. A live-verified merge
+  // moves it back to approved, from where the one-shot claim takes it.
+  approved: ["applying", "awaiting_merge"],
+  // Export failure lands failed (the unstrand pattern), never a limbo state.
+  awaiting_merge: ["approved", "failed"],
   rejected: [],
   applying: ["applied", "failed"],
   applied: ["rolled_back"],

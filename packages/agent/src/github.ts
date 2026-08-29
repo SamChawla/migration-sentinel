@@ -54,6 +54,7 @@ export interface PrInfo {
   headSha: string;
   htmlUrl: string;
   merged: boolean;
+  mergedBy: string | null;
 }
 
 export interface GithubClientOptions {
@@ -72,6 +73,25 @@ export interface GithubClient {
   getChecks(repo: string, ref: string): Promise<ChecksState>;
   createComment(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
   updateComment(repo: string, commentId: number, body: string): Promise<{ id: number }>;
+  // ── export helpers (PR4) ──
+  /** ref like "heads/main" → its object sha. */
+  getRef(repo: string, ref: string): Promise<{ sha: string }>;
+  /** ref like "refs/heads/x". 422 = already exists (caller may reuse). */
+  createRef(repo: string, ref: string, sha: string): Promise<void>;
+  /** Create (or update, when sha of the existing file is given) one file. */
+  putFile(
+    repo: string,
+    path: string,
+    input: { branch: string; message: string; content: string; sha?: string },
+  ): Promise<void>;
+  createPull(
+    repo: string,
+    input: { title: string; head: string; base: string; body?: string },
+  ): Promise<{ number: number; htmlUrl: string }>;
+  /** Update an existing ref to point at a new sha. */
+  updateRef(repo: string, ref: string, sha: string, force?: boolean): Promise<void>;
+  /** Live merge check — GET /pulls/{n}/merge (204 merged / 404 not). */
+  isMerged(repo: string, number: number): Promise<boolean>;
 }
 
 /** owner/repo → "owner/repo" with each segment individually encoded. */
@@ -135,6 +155,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         headSha: String(pr.head?.sha ?? ""),
         htmlUrl: String(pr.html_url ?? ""),
         merged: Boolean(pr.merged),
+        mergedBy: typeof pr.merged_by?.login === "string" ? pr.merged_by.login : null,
       };
     },
 
@@ -209,6 +230,63 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         { body },
       );
       return { id: Number(c.id) };
+    },
+
+    async getRef(repo, ref) {
+      const encRef = ref.split("/").map(encodeURIComponent).join("/");
+      const data = await call<{ object?: { sha?: string } }>(
+        "GET",
+        `/repos/${encodeRepo(repo)}/git/ref/${encRef}`,
+      );
+      const sha = data.object?.sha;
+      if (!sha) throw new GithubApiError(`No sha for ref ${ref}.`, 502, ref);
+      return { sha };
+    },
+
+    async createRef(repo, ref, sha) {
+      await call("POST", `/repos/${encodeRepo(repo)}/git/refs`, { ref, sha });
+    },
+
+    async putFile(repo, path, input) {
+      const encPath = path.split("/").map(encodeURIComponent).join("/");
+      await call("PUT", `/repos/${encodeRepo(repo)}/contents/${encPath}`, {
+        message: input.message,
+        content: Buffer.from(input.content, "utf8").toString("base64"),
+        branch: input.branch,
+        ...(input.sha ? { sha: input.sha } : {}),
+      });
+    },
+
+    async createPull(repo, input) {
+      const pr = await call<{ number: number; html_url: string }>(
+        "POST",
+        `/repos/${encodeRepo(repo)}/pulls`,
+        { title: input.title, head: input.head, base: input.base, body: input.body ?? "" },
+      );
+      return { number: Number(pr.number), htmlUrl: String(pr.html_url) };
+    },
+
+    async updateRef(repo, ref, sha, force = false) {
+      const encRef = ref.split("/").map(encodeURIComponent).join("/");
+      await call("PATCH", `/repos/${encodeRepo(repo)}/git/refs/${encRef}`, { sha, force });
+    },
+
+    async isMerged(repo, number) {
+      // 204 (no body) = merged; 404 = not merged. Bypass call()'s JSON parse.
+      const path = `/repos/${encodeRepo(repo)}/pulls/${Number(number)}/merge`;
+      const res = await fetchImpl(`${baseUrl}${path}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${opts.token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "migration-sentinel",
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status === 204) return true;
+      if (res.status === 404) return false;
+      throw new GithubApiError(`GitHub API ${res.status} on ${path}`, res.status, path);
     },
   };
 }

@@ -21,6 +21,7 @@ import {
   approval,
   applyRun,
   auditEvent,
+  githubLink,
 } from "../packages/db/src/schema.js";
 import { loadDotenv } from "./load-env.js";
 
@@ -70,6 +71,7 @@ async function main() {
 
   // Clear existing data (idempotent re-seed)
   console.log("→ Clearing existing demo data…");
+  await tx.delete(githubLink);
   await tx.delete(auditEvent);
   await tx.delete(approval);
   await tx.delete(preflightResult);
@@ -655,6 +657,148 @@ async function main() {
     createdAt: hoursAgo(0.2),
   });
 
+  // ── Migration 8: exported prod request — AWAITING_MERGE (PR4 demo) ────
+  // The two-gate flow frozen at gate 2: staging applied (rail unlocked), prod
+  // approved, export PR open on the scratch repo. Demoable with GitHub down —
+  // Apply stays locked on the cached "open" state, and the live re-verify in
+  // the apply route honestly refuses.
+  console.log("→ Seeding migration: Index orders(status) (awaiting_merge)…");
+  const promoGroup8 = crypto.randomUUID();
+  const STATUS_UP = "CREATE INDEX CONCURRENTLY idx_orders_status ON public.orders (status);";
+  const STATUS_DOWN = "DROP INDEX CONCURRENTLY IF EXISTS idx_orders_status;";
+
+  const [req8s] = await tx.insert(migrationRequest).values({
+    targetDatabaseId: stagingTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: STATUS_UP },
+    title: "Index orders(status) CONCURRENTLY",
+    status: "applied",
+    requestedBy: "priya@acme.io",
+    promotionGroupId: promoGroup8,
+    createdAt: hoursAgo(9),
+    updatedAt: hoursAgo(8.5),
+  }).returning();
+
+  const [art8s] = await tx.insert(generatedArtifact).values({
+    migrationRequestId: req8s.id,
+    version: 1,
+    upSql: STATUS_UP,
+    downSql: STATUS_DOWN,
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(9),
+  }).returning();
+
+  await tx.insert(shadowRun).values({
+    migrationRequestId: req8s.id,
+    generatedArtifactId: art8s.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(9),
+  });
+  await tx.insert(approval).values({
+    migrationRequestId: req8s.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(8.5),
+    createdAt: hoursAgo(9),
+  });
+  await tx.insert(applyRun).values({
+    migrationRequestId: req8s.id,
+    status: "succeeded",
+    lockTimeoutMs: 3000,
+    statementTimeoutMs: 30000,
+    rollbackAvailable: true,
+    appliedAt: hoursAgo(8.5),
+    logs: "SET lock_timeout=3000ms statement_timeout=30000ms | APPLIED (autocommit) — 1/1 statement(s).",
+    createdAt: hoursAgo(8.5),
+  });
+
+  const [req8] = await tx.insert(migrationRequest).values({
+    targetDatabaseId: prodTarget.id,
+    intakeKind: "github_pr",
+    intakePayload: {
+      sql: STATUS_UP,
+      pr: {
+        url: "https://github.com/SamChawla/sentinel-demo-app/pull/3",
+        repo: "SamChawla/sentinel-demo-app",
+        file: "migrations/0004_idx_orders_status.sql",
+        prNumber: 3,
+        headSha: "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed",
+      },
+    },
+    title: "Index orders(status) CONCURRENTLY",
+    status: "awaiting_merge",
+    requestedBy: "priya@acme.io",
+    promotionGroupId: promoGroup8,
+    promotedFromRequestId: req8s.id,
+    createdAt: hoursAgo(3),
+    updatedAt: hoursAgo(2.5),
+  }).returning();
+
+  const [art8] = await tx.insert(generatedArtifact).values({
+    migrationRequestId: req8.id,
+    version: 1,
+    upSql: STATUS_UP,
+    downSql: STATUS_DOWN,
+    reversibility: "reversible",
+    model: "github-pr",
+    createdAt: hoursAgo(3),
+  }).returning();
+
+  const [shadow8] = await tx.insert(shadowRun).values({
+    migrationRequestId: req8.id,
+    generatedArtifactId: art8.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(3),
+  }).returning();
+  const [blast8] = await tx.insert(blastReport).values({
+    shadowRunId: shadow8.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 10,
+    tablesTouched: ["public.orders"],
+    createdAt: hoursAgo(3),
+  }).returning();
+  await tx.insert(blastFinding).values({
+    blastReportId: blast8.id,
+    statementIndex: 0,
+    statementSql: "CREATE INDEX CONCURRENTLY",
+    severity: "green",
+    note: "Non-blocking index build.",
+  });
+  await tx.insert(qodoReview).values({
+    generatedArtifactId: art8.id,
+    verdict: "passed",
+    findings: [],
+  });
+  await tx.insert(approval).values({
+    migrationRequestId: req8.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(2.5),
+    createdAt: hoursAgo(3),
+  });
+  await tx.insert(githubLink).values({
+    migrationRequestId: req8.id,
+    repo: "SamChawla/sentinel-demo-app",
+    prNumber: 3,
+    commitSha: "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed",
+    filePath: "migrations/0004_idx_orders_status.sql",
+    prTitle: "Add status index for order dashboards",
+    prState: "open",
+    headSha: "f00dfeedf00dfeedf00dfeedf00dfeedf00dfeed",
+    checksState: "success",
+    htmlUrl: "https://github.com/SamChawla/sentinel-demo-app/pull/3",
+    lastSyncedAt: hoursAgo(2.5),
+    exportBranch: "sentinel/migration-" + req8.id.replace(/-/g, "").slice(0, 8),
+    exportPrNumber: 4,
+    exportPrUrl: "https://github.com/SamChawla/sentinel-demo-app/pull/4",
+    exportPrState: "open",
+    createdAt: hoursAgo(3),
+  });
+
   // ── Audit events ──────────────────────────────────────────────────────
   console.log("→ Seeding audit events…");
   await tx.insert(auditEvent).values([
@@ -670,6 +814,8 @@ async function main() {
     { migrationRequestId: req5.id, actor: "sam.chawla26@gmail.com", action: "approval.rejected", detail: "Rejected — unbounded UPDATE, prior values unrecoverable.", tone: "red" as const, createdAt: hoursAgo(71) },
     { migrationRequestId: req5.id, actor: "agent", action: "gate.paused", detail: "RED verdict — data-mutating statement with no rollback.", tone: "red" as const, createdAt: hoursAgo(72) },
     { migrationRequestId: req7.id, actor: "agent", action: "gate.blocked", detail: "BLOCKED — unbounded DELETE destroys the whole table with no recovery path. Sentinel refuses to apply; approval cannot override.", tone: "red" as const, createdAt: hoursAgo(0.2) },
+    { migrationRequestId: req8.id, actor: "sam.chawla26@gmail.com", action: "approval.approved", detail: "Approved — handing to the export gate (prod + linked repo).", tone: "green" as const, createdAt: hoursAgo(2.5) },
+    { migrationRequestId: req8.id, actor: "sentinel.gate", action: "export.pr_opened", detail: "Exported to SamChawla/sentinel-demo-app#4 — awaiting the source-of-truth merge (gate 2). No apply has run.", tone: "info" as const, createdAt: hoursAgo(2.5) },
   ]);
 
   // ── Summary ───────────────────────────────────────────────────────────

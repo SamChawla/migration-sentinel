@@ -251,8 +251,11 @@ export default function Landing() {
             <div className="flow-stage-label">You already have this</div>
             <div className="flow-stage-title">Migration runner</div>
             <div className="flow-stage-body">
-              Once approved, your existing tool applies the migration. Sentinel
-              doesn&apos;t replace your runner — it guards it.
+              Approved non-prod changes run through Sentinel&apos;s guarded executor
+              (timeouts, transaction, auto-rollback). A prod approval exports the
+              migration back to your repo as a PR — your team&apos;s merge is the final
+              gate before the guarded apply. Sentinel doesn&apos;t replace your
+              workflow — it guards it.
             </div>
             <div className="flow-stage-tools">
               <span className="flow-tool">Alembic</span>
@@ -280,7 +283,8 @@ export default function Landing() {
               <div>&rarr; makemigrations</div>
               <div className="added">&rarr; sentinel: dry-run, prove rollback, show blast radius</div>
               <div className="added">&rarr; human approves (or rejects)</div>
-              <div>&rarr; migrate</div>
+              <div className="added">&rarr; prod: exported PR merged on GitHub</div>
+              <div>&rarr; guarded apply</div>
             </div>
           </div>
         </div>

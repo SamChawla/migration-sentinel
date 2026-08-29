@@ -43,6 +43,20 @@
       "when": 1787997525565,
       "tag": "0005_plain_the_spike",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787997896249,
+      "tag": "0006_absurd_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787997910466,
+      "tag": "0007_square_the_enforcers",
+      "breakpoints": true
     }
   ]
 }

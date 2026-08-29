@@ -13,7 +13,9 @@ export function SeverityChip({ severity }: { severity: Severity }) {
 }
 
 function statusClass(status: string): string {
-  if (status === "awaiting_approval") return "s-awaiting";
+  // awaiting_merge is gate 2 — still waiting on a human, so it chips like
+  // awaiting_approval rather than an in-flight machine state.
+  if (status === "awaiting_approval" || status === "awaiting_merge") return "s-awaiting";
   if (status === "applied") return "s-applied";
   if (status === "blocked" || status === "rejected" || status === "failed" || status === "rolled_back") return "s-rejected";
   if (["generating", "reviewing", "dry_running", "applying"].includes(status)) return "s-running";

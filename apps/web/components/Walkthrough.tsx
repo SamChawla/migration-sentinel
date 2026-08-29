@@ -59,6 +59,11 @@ const STEPS: Step[] = [
   },
   {
     target: null,
+    title: "Prod gets a second gate",
+    body: "A prod migration climbs the environment ladder — it must be applied on a lower environment first. When it's linked to a repo, approval exports {up, down, report} as a GitHub PR; a human merges it there before the guarded apply is released.",
+  },
+  {
+    target: null,
     title: "Ask the copilot",
     body: "Inside any request you can ask a read-only copilot about the change. It runs live SELECTs against the target to answer questions like “how many rows will this touch?” — and it can never approve or apply anything.",
   },

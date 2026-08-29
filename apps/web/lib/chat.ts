@@ -121,6 +121,11 @@ function buildSystemContext(rec: RequestRecord, audit: AuditEventRow[]): string 
     "",
     `MIGRATION: ${rec.title}`,
     `Status: ${rec.status} · Target DB: ${rec.targetDb} · Requested by: ${rec.requestedBy}`,
+    ...(rec.status === "awaiting_merge"
+      ? [
+          "NOTE: 'awaiting_merge' means the console approval (gate 1) exported this migration as a GitHub PR with {up, down, report}; a repo maintainer must MERGE that PR on GitHub (gate 2) before the guarded apply can run. Nothing has been applied yet.",
+        ]
+      : []),
     `Overall severity: ${rec.overallSeverity} · Reversibility: ${rec.reversibility} · Rollback verified: ${rec.rollbackVerified}`,
     `Rows affected (est): ${rec.rowsAffected ?? "unknown"} · Est. lock: ${rec.estLockMs ?? "unknown"} ms`,
     `Qodo review: ${rec.qodoVerdict}${rec.qodoFindings.length ? ` — ${rec.qodoFindings.join("; ")}` : ""}`,

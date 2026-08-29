@@ -103,7 +103,7 @@ function toIso(d: Date | null | undefined): string {
  *  a filter reflects EVERY matching request, not only those on the current page. */
 const REQUEST_STATUS_GROUPS: Record<string, RequestStatus[]> = {
   awaiting_approval: ["awaiting_approval"],
-  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "applying"],
+  in_flight: ["received", "generating", "reviewing", "dry_running", "approved", "awaiting_merge", "applying"],
   applied: ["applied"],
   blocked: ["blocked"],
   rejected: ["rejected"],
@@ -1228,6 +1228,12 @@ export interface GithubLinkRow {
   htmlUrl: string | null;
   lastSyncedAt: string | null;
   commentId: number | null;
+  // export gate (PR4)
+  exportBranch: string | null;
+  exportPrNumber: number | null;
+  exportPrUrl: string | null;
+  exportPrState: string | null;
+  exportMergedAt: string | null;
 }
 
 function toGithubLinkRow(r: typeof githubLink.$inferSelect): GithubLinkRow {
@@ -1245,7 +1251,54 @@ function toGithubLinkRow(r: typeof githubLink.$inferSelect): GithubLinkRow {
     htmlUrl: r.htmlUrl,
     lastSyncedAt: r.lastSyncedAt ? r.lastSyncedAt.toISOString() : null,
     commentId: r.commentId,
+    exportBranch: r.exportBranch,
+    exportPrNumber: r.exportPrNumber,
+    exportPrUrl: r.exportPrUrl,
+    exportPrState: r.exportPrState,
+    exportMergedAt: r.exportMergedAt ? r.exportMergedAt.toISOString() : null,
   };
+}
+
+/** Record the opened export PR (gate 2) on the link. */
+export async function recordExportPr(
+  requestId: string,
+  input: { branch: string; prNumber: number; prUrl: string },
+): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({
+      exportBranch: input.branch,
+      exportPrNumber: input.prNumber,
+      exportPrUrl: input.prUrl,
+      exportPrState: "open",
+    })
+    .where(eq(githubLink.migrationRequestId, requestId));
+}
+
+/** Persist a LIVE-verified merge of the export PR. */
+export async function markExportMerged(requestId: string): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({ exportPrState: "merged", exportMergedAt: new Date() })
+    .where(eq(githubLink.migrationRequestId, requestId));
+}
+
+/**
+ * Guarded status transition used by the export gate: flip `from` → `to` only
+ * when the request is still in `from` (single conditional UPDATE, same
+ * one-shot discipline as claimRequestForApply). Returns whether it moved.
+ */
+export async function transitionRequestStatus(
+  requestId: string,
+  from: RequestStatus,
+  to: RequestStatus,
+): Promise<boolean> {
+  const rows = await db
+    .update(migrationRequest)
+    .set({ status: to, updatedAt: new Date() })
+    .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, from)))
+    .returning({ id: migrationRequest.id });
+  return rows.length === 1;
 }
 
 export async function createGithubLink(input: {

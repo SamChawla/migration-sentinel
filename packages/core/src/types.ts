@@ -12,7 +12,8 @@ export type RequestStatus =
   | "applying"
   | "applied"
   | "rolled_back"
-  | "failed";
+  | "failed"
+  | "awaiting_merge";
 
 export type IntakeKind = "nl_intent" | "raw_sql" | "github_pr";
 export type DbEnvironment = "local" | "dev" | "staging" | "prod";
