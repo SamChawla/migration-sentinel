@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { DbPicker } from "@/components/DbPicker";
+import { SchemaBrowser } from "@/components/SchemaBrowser";
 
 type Mode = "sql" | "intent";
 
@@ -58,6 +59,9 @@ export default function NewRequest() {
 
         <label className="lbl" htmlFor="db-picker-trigger">Target database</label>
         <DbPicker value={targetDb} onChange={setTargetDb} />
+
+        {/* Real tables/columns of the picked DB — see the schema before writing SQL. */}
+        <SchemaBrowser alias={targetDb} />
 
         <div className="tabs" role="tablist" style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <button type="button" role="tab" aria-selected={mode === "sql"}

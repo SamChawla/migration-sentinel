@@ -36,7 +36,7 @@ function short(t: string): string {
   return t.replace(/^public\./, "");
 }
 
-export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEdge[] }) {
+export function SchemaErd({ tables, edges, caption }: { tables: SceneTable[]; edges: FkEdge[]; caption?: string }) {
   const canvasRef = useRef<HTMLDivElement>(null);
   const cellRefs = useRef<Map<string, HTMLElement>>(new Map());
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
@@ -99,6 +99,11 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
       <div style={{ position: "sticky", top: 0, left: 0, zIndex: 5, padding: "12px 0 0 16px", fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: ".16em", color: "var(--muted)", textTransform: "uppercase", pointerEvents: "none" }}>
         SCHEMA · ENTITY RELATIONSHIPS
       </div>
+      {caption && (
+        <div role="note" style={{ position: "sticky", left: 0, zIndex: 5, margin: "6px 16px 0", padding: "4px 10px", display: "inline-block", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--warn)", border: "1px solid color-mix(in srgb, var(--warn) 40%, transparent)", borderRadius: 8, background: "var(--panel)" }}>
+          ▲ {caption}
+        </div>
+      )}
       {/* Canvas sized to content (min 100% of the wrapper) */}
       <div ref={canvasRef} style={{ position: "relative", minWidth: "100%", width: "max-content", minHeight: 320, padding: "8px 28px 28px" }}>
         <svg width={dims.w} height={dims.h} style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", zIndex: 1, overflow: "visible" }}>
@@ -162,7 +167,7 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
                     );
                   })}
                   {t.columns.length === 0 && (
-                    <div style={{ padding: "10px 12px", fontSize: 11, color: "var(--faint)" }}>(columns not in fixture)</div>
+                    <div style={{ padding: "10px 12px", fontSize: 11, color: "var(--faint)" }}>(columns unavailable)</div>
                   )}
                 </div>
               </div>
