@@ -61,13 +61,17 @@ export function RequestsTable({
     const qs = sp.toString();
     return qs ? `/requests?${qs}` : "/requests";
   }
-  function SortTh({ col, label }: { col: string; label: string }) {
+  function SortTh({ col, label, invert = false }: { col: string; label: string; invert?: boolean }) {
     const active = sort === col;
+    // `invert` is for columns whose DISPLAYED value runs opposite the stored
+    // one: Age renders now − created_at, so ascending created_at shows the
+    // LARGEST ages first. The arrow must describe the values the user sees.
+    const shownAsc = invert ? dir === "desc" : dir === "asc";
     return (
       <th>
         <Link href={sortHref(col)} className="th-sort" style={{ color: active ? "var(--text)" : "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
           {label}
-          <span style={{ fontSize: 9, color: active ? "var(--cyan)" : "var(--faint)" }}>{active ? (dir === "asc" ? "▲" : "▼") : "↕"}</span>
+          <span style={{ fontSize: 9, color: active ? "var(--cyan)" : "var(--faint)" }}>{active ? (shownAsc ? "▲" : "▼") : "↕"}</span>
         </Link>
       </th>
     );
@@ -105,7 +109,7 @@ export function RequestsTable({
               <th>Severity</th>
               <th>Rollback</th>
               <SortTh col="status" label="Status" />
-              <SortTh col="created_at" label="Age" />
+              <SortTh col="created_at" label="Age" invert />
               <th></th>
             </tr>
           </thead>
