@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
-import { getRequest, recordApproval, resetApproval, insertAuditEvent, setRequestStatus } from "@sentinel/db/queries";
+import {
+  getRequest,
+  getTrueforgeSession,
+  recordApproval,
+  resetApproval,
+  insertAuditEvent,
+  setRequestStatus,
+} from "@sentinel/db/queries";
 import { assertApproved, GateError } from "@sentinel/core";
 import { classifyMigration } from "@sentinel/shadow";
-import { applyMigration } from "@sentinel/agent";
+import { applyMigration, resolveApplyGate } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -74,6 +81,33 @@ export async function POST(req: Request) {
     } catch (auditErr) {
       console.error(`[approvals] rejected ${requestId} but audit write failed:`, auditErr);
     }
+    // Phase A: carry the rejection to the paused TrueForge turn as a real
+    // `user.tool_approval: deny`. Best-effort — the rejection above is already
+    // authoritative; an unreachable TrueForge changes nothing.
+    try {
+      const gateSession = await getTrueforgeSession(requestId);
+      if (gateSession) {
+        const gate = await resolveApplyGate({
+          session: gateSession,
+          decision: "rejected",
+          reason: `Rejected at the Sentinel gate by ${actor}.`,
+          assertGate: () => {},
+          execute: async () => undefined,
+        });
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.gate",
+          action: "gate.trueforge_resolved",
+          detail: gate.trueforgeUsed
+            ? "TrueForge apply_migration pause resolved: DENY."
+            : "TrueForge unreachable — deny not delivered; the deterministic gate already refused the apply.",
+          tone: "neutral",
+          payload: { trueforgeUsed: gate.trueforgeUsed, decision: "deny" },
+        });
+      }
+    } catch (tfErr) {
+      console.error(`[approvals] TrueForge deny resolve failed for ${requestId} (non-fatal):`, tfErr);
+    }
     return NextResponse.json({ ok: true, status: "rejected" });
   }
 
@@ -127,7 +161,46 @@ export async function POST(req: Request) {
       detail: `Approved — "${rec.title}". Handing to the guarded apply executor.`,
       tone: "green",
     });
-    const result = await applyMigration(requestId, { typedConfirm: typedConfirm ?? null });
+    // Phase A: the decision travels through TrueForge's own protocol — resolve
+    // the paused apply_migration turn with `user.tool_approval: allow`, but ONLY
+    // after the deterministic core gate passes again (assertGate below re-runs
+    // assertApproved with the same inputs — ADR-004: TrueForge is resumed by a
+    // decision core has validated, never in place of it). No persisted session,
+    // or an unreachable TrueForge, degrades to exactly the pre-Phase-A direct
+    // call; the gate never depends on network liveness.
+    const gateSession = await getTrueforgeSession(requestId);
+    const gate = await resolveApplyGate({
+      session: gateSession,
+      decision: "approved",
+      assertGate: () =>
+        assertApproved({
+          decision: "approved",
+          requiresTypedConfirm: rec.approval.requiresTypedConfirm,
+          typedConfirmValue: typedConfirm ?? null,
+          expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+          blocked,
+        }),
+      execute: () => applyMigration(requestId, { typedConfirm: typedConfirm ?? null }),
+    });
+    if (gateSession) {
+      // Which mechanism actually gated this apply — best-effort observability
+      // (A.4); a failed audit write must not mask the (already done) apply.
+      try {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.gate",
+          action: "gate.trueforge_resolved",
+          detail: gate.trueforgeUsed
+            ? "TrueForge apply_migration pause resolved: ALLOW — guarded executor ran."
+            : "TrueForge unreachable — fell back to the deterministic gate; guarded executor ran.",
+          tone: "info",
+          payload: { trueforgeUsed: gate.trueforgeUsed, decision: "allow" },
+        });
+      } catch (auditErr) {
+        console.error(`[approvals] trueforge_resolved audit write failed for ${requestId}:`, auditErr);
+      }
+    }
+    const result = gate.result!;
     if (result.status === "failed") {
       return NextResponse.json({ ok: false, status: "failed", error: result.error }, { status: 500 });
     }

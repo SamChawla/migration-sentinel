@@ -101,7 +101,10 @@ async function main() {
   let text = "";
   let status = "unknown";
   const codeEvents: any[] = [];
-  for await (const { data: event } of stream.withMetadata()) {
+  for await (const { data } of stream.withMetadata()) {
+    // Probe code: the server's real event shapes are what we're here to see, so
+    // access defensively rather than trusting the SDK union (same as spike.ts).
+    const event = data as any;
     const type = event?.type as string | undefined;
     if (DUMP) console.log("   ·", type, JSON.stringify(shallow(event)));
     if (type === "model.message.delta") {

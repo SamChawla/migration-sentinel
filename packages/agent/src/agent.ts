@@ -27,10 +27,12 @@ import {
   claimRequestForPipeline,
   persistSafetyReport,
   insertAuditEvent,
+  setTrueforgeSession,
 } from "@sentinel/db/queries";
 import { dumpTargetSchema, splitStatements } from "@sentinel/shadow";
 import { runSafetyPipeline, type SafetyReport } from "./pipeline";
 import { generateMigration } from "./generate";
+import { openApplyGateSession } from "./apply-session";
 
 export interface RunPipelineOptions {
   /** Override the target connection URL (else resolved from the request/env). */
@@ -232,6 +234,42 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
       }
     } catch (auditErr) {
       console.error(`[agent] gate audit write failed for ${requestId} (report already persisted):`, auditErr);
+    }
+
+    // Phase A — arm the TrueForge leg of the gate: open the apply session so
+    // the agent's apply_migration call is ALREADY paused on
+    // tool.approval_required while the human reviews. Strictly best-effort and
+    // ADDITIVE: a failure here (server down, tool unconfigured) leaves the
+    // deterministic core gate governing alone, exactly as before this phase.
+    if (!report.blocked) {
+      try {
+        const gateSession = await openApplyGateSession({
+          requestId,
+          title: req.title,
+          upSql: artifact.upSql,
+        });
+        if (gateSession) {
+          await setTrueforgeSession(requestId, gateSession);
+          await insertAuditEvent({
+            migrationRequestId: requestId,
+            actor: "sentinel.agent",
+            action: "gate.trueforge_armed",
+            detail: "TrueForge apply session paused on tool.approval_required — the console decision will resolve it.",
+            tone: "info",
+            payload: { sessionId: gateSession.sessionId },
+          });
+        } else {
+          await insertAuditEvent({
+            migrationRequestId: requestId,
+            actor: "sentinel.agent",
+            action: "gate.trueforge_unavailable",
+            detail: "TrueForge apply session could not be armed — the deterministic core gate governs alone.",
+            tone: "neutral",
+          });
+        }
+      } catch (tfErr) {
+        console.error(`[agent] TrueForge gate arming failed for ${requestId} (non-fatal):`, tfErr);
+      }
     }
   } catch (e) {
     await setRequestStatus(requestId, "failed").catch(() => {});
