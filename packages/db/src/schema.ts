@@ -14,6 +14,7 @@ import {
   timestamp,
   index,
   uniqueIndex,
+  type AnyPgColumn,
 } from "drizzle-orm/pg-core";
 
 // ── enums ────────────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ export const auditTone = pgEnum("audit_tone", ["green", "red", "info", "neutral"
 export const preflightKind = pgEnum("preflight_kind", [
   "not_null", "add_notnull_no_default", "unique", "check", "foreign_key", "type_change",
 ]);
+export const dbEnvironment = pgEnum("db_environment", ["local", "dev", "staging", "prod"]);
 
 // ── target_database ──────────────────────────────────────────────────────
 export const targetDatabase = pgTable("target_database", {
@@ -40,6 +42,7 @@ export const targetDatabase = pgTable("target_database", {
   engine: text("engine").notNull().default("postgres"),
   connectionAlias: text("connection_alias").notNull(),
   connectionUrl: text("connection_url"),
+  environment: dbEnvironment("environment").notNull().default("dev"),
   schemaFingerprint: text("schema_fingerprint"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -62,6 +65,9 @@ export const migrationRequest = pgTable(
     trueforgeSessionId: text("trueforge_session_id"),
     trueforgeThreadId: text("trueforge_thread_id"),
     trueforgeToolCallId: text("trueforge_tool_call_id"),
+    promotionGroupId: uuid("promotion_group_id").notNull().defaultRandom(),
+    promotedFromRequestId: uuid("promoted_from_request_id")
+      .references((): AnyPgColumn => migrationRequest.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -69,6 +75,7 @@ export const migrationRequest = pgTable(
     statusIdx: index("migration_request_status_idx").on(t.status),
     targetIdx: index("migration_request_target_idx").on(t.targetDatabaseId),
     createdAtIdx: index("migration_request_created_at_idx").on(t.createdAt),
+    promotionGroupIdx: index("migration_request_promotion_group_idx").on(t.promotionGroupId),
   }),
 );
 
