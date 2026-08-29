@@ -1,13 +1,14 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { DbPicker } from "@/components/DbPicker";
 
 type Mode = "sql" | "intent";
 
 export default function NewRequest() {
   const router = useRouter();
   const [title, setTitle] = useState("");
-  const [targetDb, setTargetDb] = useState("prod-orders-db");
+  const [targetDb, setTargetDb] = useState("");
   const [mode, setMode] = useState<Mode>("sql");
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,9 +56,8 @@ export default function NewRequest() {
         <input id="mig-title" className="field" style={{ marginBottom: 14 }} value={title}
           onChange={(e) => setTitle(e.target.value)} placeholder="Drop legacy_notes from users" required />
 
-        <label className="lbl" htmlFor="mig-target">Target database</label>
-        <input id="mig-target" className="field" style={{ marginBottom: 14 }} value={targetDb}
-          onChange={(e) => setTargetDb(e.target.value)} required />
+        <label className="lbl" htmlFor="db-picker-trigger">Target database</label>
+        <DbPicker value={targetDb} onChange={setTargetDb} />
 
         <div className="tabs" role="tablist" style={{ display: "flex", gap: 8, marginBottom: 10 }}>
           <button type="button" role="tab" aria-selected={mode === "sql"}
@@ -81,7 +81,7 @@ export default function NewRequest() {
 
         {error && <div className="inline-error" role="alert" style={{ marginBottom: 10 }}>{error}</div>}
 
-        <button className="btn btn-cyan" type="submit" disabled={busy || !title || !text.trim()}>
+        <button className="btn btn-cyan" type="submit" disabled={busy || !title || !targetDb || !text.trim()}>
           {busy ? "Submitting..." : "Submit to agent"}
         </button>
       </form>

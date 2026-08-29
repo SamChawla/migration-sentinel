@@ -26,6 +26,7 @@ import type {
   QodoVerdict,
   ApprovalDecision,
 } from "@sentinel/core";
+import { encryptUrl, decryptUrl } from "./crypt";
 
 // ── Flat shapes the UI consumes ──────────────────────────────────────────
 
@@ -534,9 +535,10 @@ export async function resetApproval(requestId: string): Promise<boolean> {
 // ── Pipeline persistence (agent orchestrator writes these) ────────────────
 
 /** Resolve the connection URL for a request's target DB.
- *  Prefers the stored per-target URL; falls back to $TARGET_DB_URL (single-target
- *  hackathon default). Read + write use the same URL here; a production build
- *  would hand back distinct read-only vs write credentials. */
+ *  Returns the target row's stored URL, or null when the target has none —
+ *  there is NO environment-variable fallback (see the note below). Read + write
+ *  use the same URL here; a production build would hand back distinct
+ *  read-only vs write credentials. */
 export async function getRequestTargetUrl(requestId: string): Promise<string | null> {
   const rows = await db
     .select({ url: targetDatabase.connectionUrl })
@@ -544,11 +546,48 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .where(eq(migrationRequest.id, requestId))
     .limit(1);
-  // Unknown request → null. Only fall back to the global URL for a request that
-  // resolves but whose target has no stored URL, never for a stale/invalid id
-  // (which must not silently connect to the default database).
+  // Unknown request → null. A resolved target with NO stored URL also returns
+  // null: with a multi-database picker, silently falling back to the global
+  // TARGET_DB_URL could run a migration/probe against the default (production)
+  // database rather than the alias the user selected.
   if (rows.length === 0) return null;
-  return rows[0].url ?? process.env.TARGET_DB_URL ?? null;
+  const raw = rows[0].url;
+  return raw ? decryptUrl(raw) : null;
+}
+
+export interface TargetDbRow {
+  id: string;
+  name: string;
+  alias: string;
+  /** whether a real connection URL is stored (vs. a seeded alias only) */
+  hasUrl: boolean;
+}
+
+/** All configured target databases — the selectable connections. */
+export async function listTargetDatabases(): Promise<TargetDbRow[]> {
+  const rows = await db.select().from(targetDatabase).orderBy(targetDatabase.connectionAlias);
+  return rows.map((r) => ({ id: r.id, name: r.name, alias: r.connectionAlias, hasUrl: Boolean(r.connectionUrl) }));
+}
+
+/** Add a NEW connection. Refuses to reuse an existing alias — overwriting a
+ *  shared target row's URL would retroactively reroute every request that
+ *  already references it (including pending/approved migrations). Returns
+ *  { ok:false } on a duplicate alias so the caller can 409. The caller is
+ *  responsible for having tested connectivity first. */
+export async function addTargetConnection(
+  input: { alias: string; url: string },
+): Promise<{ ok: true; row: TargetDbRow } | { ok: false; reason: "duplicate" }> {
+  const existing = await db
+    .select({ id: targetDatabase.id })
+    .from(targetDatabase)
+    .where(eq(targetDatabase.connectionAlias, input.alias))
+    .limit(1);
+  if (existing.length > 0) return { ok: false, reason: "duplicate" };
+  const [row] = await db
+    .insert(targetDatabase)
+    .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: encryptUrl(input.url) })
+    .returning();
+  return { ok: true, row: { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true } };
 }
 
 export interface IntakeRow {
