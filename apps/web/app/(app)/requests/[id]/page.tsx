@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getRequest, getRequestTargetUrl, getPromotionGroup, getApplyGuardContext } from "@sentinel/db/queries";
+import { getRequest, getRequestTargetUrl, getPromotionGroup, getApplyGuardContext, getGithubLink } from "@sentinel/db/queries";
 import { classifyMigration, introspectConnection, type SchemaIntrospection } from "@sentinel/shadow";
 import {
   gateDisposition,
@@ -11,6 +11,7 @@ import {
 import { SeverityChip, StatusChip } from "@/components/chips";
 import { EnvBadge } from "@/components/EnvBadge";
 import { PromotionRail } from "@/components/console/PromotionRail";
+import { GithubPanel } from "@/components/console/GithubPanel";
 import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readouts";
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
@@ -313,9 +314,10 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
 
   // Promotion rail state: the group's per-env runs + the prod lock verdict,
   // computed with the SAME promotionEligible the server enforces.
-  const [promotionGroup, guardCtx] = await Promise.all([
+  const [promotionGroup, guardCtx, githubLink] = await Promise.all([
     getPromotionGroup(r.promotionGroupId),
     getApplyGuardContext(r.id),
+    getGithubLink(r.id),
   ]);
   const prodLocked =
     r.environment === "prod" &&
@@ -562,6 +564,9 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
               </div>
             )}
           </div>
+
+          {/* GitHub PR link — chips + refresh + verdict comment */}
+          {githubLink && <GithubPanel requestId={r.id} link={githubLink} />}
 
           {/* Qodo review */}
           <div className="glass">

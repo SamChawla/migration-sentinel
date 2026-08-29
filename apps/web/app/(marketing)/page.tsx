@@ -20,7 +20,7 @@ const CAPABILITIES = [
   { title: "Blast radius before prod", desc: "Shadow dry-run plus your database's own planner statistics: rows affected, lock type, estimated downtime — before anything runs." },
   { title: "Rollback proven, not assumed", desc: "Every migration's down script is executed on a shadow clone and the schema diffed back. If data can't be restored, we say so." },
   { title: "Human gate, keyed to danger", desc: "Irreversible operations demand typed confirmation. The gate is enforced server-side — the model cannot self-approve." },
-  { title: "Author from intent", desc: "Describe the change in plain English or paste a PR. The agent writes a safe up/down pair for you." },
+  { title: "Author from intent", desc: "Describe the change in plain English, paste SQL, or point at a GitHub PR. The agent writes a safe up/down pair for you." },
   { title: "Data pre-flight probes", desc: "SET NOT NULL with existing NULLs? We probe the real data read-only, catch the failure before it happens, and regenerate a two-phase migration." },
   { title: "Near-zero cost", desc: "No production data is ever cloned. Schema-only shadows + read-only catalog stats — the only real cost is a few model calls." },
 ];

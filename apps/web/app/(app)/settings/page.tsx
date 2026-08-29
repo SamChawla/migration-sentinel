@@ -163,7 +163,7 @@ export default async function Settings() {
           tone={euronKey ? "green" : undefined}
         />
         <Row label="Qodo review" value={qodo.value} tone={qodo.tone} />
-        <Row label="GitHub PR intake" value={github.value} tone={github.tone} />
+        <Row label="GitHub integration" value={github.value} tone={github.tone} />
       </div>
 
       <div className="glass">
