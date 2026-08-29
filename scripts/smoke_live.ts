@@ -8,13 +8,12 @@
  * a dangerous (DROP COLUMN), and a blocked (unbounded DELETE) migration.
  */
 import { Client } from "pg";
-import { createRequest, getRequest, getRequestTargetUrl } from "@sentinel/db/queries";
+import { createRequest, getRequest, getRequestTargetUrl, addTargetConnection } from "@sentinel/db/queries";
 import { runAgentPipeline, applyMigration } from "@sentinel/agent";
 
-// A fresh target alias with NO stored URL, so the SAME resolution
-// (getRequestTargetUrl → TARGET_DB_URL) is used for analysis, apply, and
-// cleanup — the analyzed database and the mutated database are provably one.
 const SMOKE_TARGET = `smoke-target-${Date.now()}`;
+const TARGET_URL = process.env.TARGET_DB_URL;
+if (!TARGET_URL) throw new Error("TARGET_DB_URL is required for smoke tests");
 // A unique column name per run keeps the smoke idempotent — the applied column
 // never collides with a prior run, and it is dropped again in cleanup.
 const SAFE_COL = `smoke_col_${Date.now()}`;
@@ -52,6 +51,9 @@ async function scenario(name: string, up: string, down: string, expect: Expect) 
 }
 
 async function main() {
+  const added = await addTargetConnection({ alias: SMOKE_TARGET, url: TARGET_URL });
+  if (!added.ok) throw new Error(`Failed to register smoke target "${SMOKE_TARGET}": duplicate alias`);
+
   // 1) SAFE — additive nullable column (green, reversible) → should apply live.
   const safeId = await scenario(
     "smoke: add nullable column",
