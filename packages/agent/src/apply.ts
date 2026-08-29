@@ -12,12 +12,13 @@
  * aborts and rolls back automatically instead of freezing the target.
  */
 import { Client } from "pg";
-import { assertApproved } from "@sentinel/core";
+import { assertApproved, promotionEligible } from "@sentinel/core";
 import { classifyMigration, splitStatements, codeOnly } from "@sentinel/shadow";
 import {
   getRequest,
   getLatestArtifact,
   getRequestTargetUrl,
+  getApplyGuardContext,
   insertApplyRun,
   finishApplyRun,
   setRequestStatus,
@@ -171,6 +172,17 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
   // AFTER a session exists, so a stalled DNS/TCP/TLS handshake would otherwise
   // leave a claimed request 'applying' indefinitely.
   const connectTimeoutMs = posInt(process.env.APPLY_CONNECT_TIMEOUT_MS, 10000);
+
+  // PROMOTION LOCK (doc 11 §4), re-run here as defense in depth: a prod apply
+  // requires a lower-environment APPLIED sibling with the same normalized SQL.
+  // DB-only — the state comes from the database of record, never the network —
+  // and BEFORE the claim, so a locked request fails fast without touching state.
+  const guardCtx = await getApplyGuardContext(requestId);
+  if (!guardCtx || !promotionEligible(guardCtx)) {
+    throw new Error(
+      "applyMigration: promotion locked — a prod migration cannot be applied until the same SQL was applied on a lower environment in its promotion group.",
+    );
+  }
 
   // One-shot: atomically flip approved → applying. If we don't win the claim,
   // the request was already applied (or isn't approved) — never reapply.
