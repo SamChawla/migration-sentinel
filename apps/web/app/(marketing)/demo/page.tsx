@@ -66,6 +66,11 @@ export default function DemoReplay() {
   // "Complete" only when the LAST phase has finished streaming — not merely
   // because the index is last (Apply still streams while atEnd is true).
   const complete = atEnd && !playing && lineN >= trace.length;
+  // The badge reports the recorded agent's state, not the replay transport:
+  // during the Gate phase the agent is paused awaiting the operator even while
+  // the replay keeps streaming, so "running" would contradict AGENT PAUSED.
+  const gateHeld = step.status === "awaiting_approval";
+  const runStatus = complete ? "complete" : gateHeld ? "awaiting approval" : playing ? "running" : "paused";
   const replay = () => { setI(0); setLineN(0); setPlaying(true); }; // reset AND play in one click
   const lineTone = (l: string) => l.startsWith("✓") ? "var(--safe)" : l.startsWith("⛔") ? "var(--danger)" : l.startsWith("⚠") ? "var(--warn)" : l.startsWith("⏸") ? "var(--hold)" : "var(--text-dim)";
 
@@ -76,8 +81,8 @@ export default function DemoReplay() {
           <h1 style={{ margin: 0, display: "flex", alignItems: "center", gap: 10 }}>
             Live Pipeline Run
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "3px 11px", borderRadius: 999, border: "1px solid var(--cyan-deep)", color: "var(--cyan)", fontSize: 11, fontWeight: 500 }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--cyan)", boxShadow: "var(--glow-cyan)", animation: playing ? "pulse 1.4s ease-in-out infinite" : "none" }} />
-              {playing ? "running" : complete ? "complete" : "paused"}
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: gateHeld ? "var(--hold)" : "var(--cyan)", boxShadow: gateHeld ? "none" : "var(--glow-cyan)", animation: playing && !gateHeld ? "pulse 1.4s ease-in-out infinite" : "none" }} />
+              {runStatus}
             </span>
           </h1>
           <p style={{ color: "var(--muted)", fontSize: ".9rem", marginTop: 6 }}>
