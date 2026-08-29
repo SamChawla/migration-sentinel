@@ -56,7 +56,7 @@ export default function NewRequest() {
         <input id="mig-title" className="field" style={{ marginBottom: 14 }} value={title}
           onChange={(e) => setTitle(e.target.value)} placeholder="Drop legacy_notes from users" required />
 
-        <label className="lbl">Target database</label>
+        <label className="lbl" htmlFor="db-picker-trigger">Target database</label>
         <DbPicker value={targetDb} onChange={setTargetDb} />
 
         <div className="tabs" role="tablist" style={{ display: "flex", gap: 8, marginBottom: 10 }}>

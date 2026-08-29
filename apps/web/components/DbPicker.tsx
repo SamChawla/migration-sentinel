@@ -92,11 +92,16 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
     <div ref={ref} style={{ position: "relative", marginBottom: 14 }}>
       <button
         type="button"
+        id="db-picker-trigger"
         className="field"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? "db-picker-listbox" : undefined}
         onClick={() => setOpen((o) => !o)}
         style={{ width: "100%", textAlign: "left", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
       >
-        <span title={selected?.hasUrl ? "Connection configured (URL stored)" : "No stored URL"} style={{ width: 7, height: 7, borderRadius: "50%", background: selected?.hasUrl ? "var(--cyan)" : "var(--faint)", flexShrink: 0 }} />
+        <span aria-hidden="true" title={selected?.hasUrl ? "Connection configured (URL stored)" : "No stored URL"} style={{ width: 7, height: 7, borderRadius: "50%", background: selected?.hasUrl ? "var(--cyan)" : "var(--faint)", flexShrink: 0 }} />
         <span style={{ color: value ? "var(--text)" : "var(--faint)" }}>{value || "Select a target database…"}</span>
         <span style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 12 }}>▾</span>
       </button>
@@ -111,6 +116,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
               <input
                 autoFocus
                 className="field"
+                aria-label="Search databases"
                 placeholder="Search databases…"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
@@ -119,11 +125,13 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                 onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
                 style={{ marginBottom: 8 }}
               />
-              <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
+              <div id="db-picker-listbox" role="listbox" aria-label="Databases" style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 2 }}>
                 {filtered.map((c) => (
                   <button
                     key={c.id}
                     type="button"
+                    role="option"
+                    aria-selected={c.alias === value}
                     onClick={() => { onChange(c.alias); setOpen(false); }}
                     style={{
                       display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8,
@@ -133,6 +141,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                   >
                     {/* Dot = whether a URL is CONFIGURED (not a live reachability check). */}
                     <span
+                      aria-hidden="true"
                       title={c.hasUrl ? "Connection configured (URL stored)" : "Seeded alias — no stored URL"}
                       style={{ width: 7, height: 7, borderRadius: "50%", background: c.hasUrl ? "var(--cyan)" : "var(--faint)" }}
                     />
