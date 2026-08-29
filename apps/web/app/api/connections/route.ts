@@ -1,10 +1,21 @@
 import { NextResponse } from "next/server";
 import { Client } from "pg";
+import dns from "node:dns/promises";
 import { listTargetDatabases, addTargetConnection } from "@sentinel/db/queries";
 import { ENV_ORDER, type DbEnvironment } from "@sentinel/core";
 import { getSession } from "@/lib/auth";
 
 const PROBE_DEADLINE_MS = 8000;
+
+/** Block SSRF: reject URLs whose hostname resolves to private/internal IPs. */
+async function isPrivateHost(hostname: string): Promise<boolean> {
+  try {
+    const { address } = await dns.lookup(hostname);
+    return /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.|::1|fc|fd|fe80)/.test(address);
+  } catch {
+    return true;
+  }
+}
 
 /** Reachability probe bounded end-to-end: pg query/statement timeouts AND a
  *  wall-clock race honouring the request's abort signal, so a server that stalls
@@ -60,7 +71,10 @@ export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
 
-  const body = await req.json().catch(() => ({}));
+  const body = await req.json().catch(() => null);
+  if (body == null || typeof body !== "object") {
+    return NextResponse.json({ error: "Request body must be a JSON object with alias and url." }, { status: 400 });
+  }
   const alias = typeof body.alias === "string" ? body.alias.trim() : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
   const environment = typeof body.environment === "string" ? body.environment.trim() : "dev";
@@ -77,8 +91,14 @@ export async function POST(req: Request) {
     );
   }
 
-  // Read-only reachability probe (bounded end-to-end) — proves we can reach the
-  // DB without touching it.
+  let parsed: URL;
+  try { parsed = new URL(url); } catch {
+    return NextResponse.json({ error: "Malformed connection URL." }, { status: 400 });
+  }
+  if (await isPrivateHost(parsed.hostname)) {
+    return NextResponse.json({ error: "Connections to private/internal network addresses are not allowed." }, { status: 422 });
+  }
+
   const probe = await probeConnection(url, req.signal);
   if (!probe.ok) {
     return NextResponse.json({ error: `Could not connect: ${probe.error}` }, { status: 400 });

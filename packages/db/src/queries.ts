@@ -28,6 +28,7 @@ import type {
   DbEnvironment,
 } from "@sentinel/core";
 import { nextEnv } from "@sentinel/core";
+import { encryptUrl, decryptUrl } from "./crypt";
 
 // ── Flat shapes the UI consumes ──────────────────────────────────────────
 
@@ -574,7 +575,8 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
   // TARGET_DB_URL could run a migration/probe against the default (production)
   // database rather than the alias the user selected.
   if (rows.length === 0) return null;
-  return rows[0].url ?? null;
+  const raw = rows[0].url;
+  return raw ? decryptUrl(raw) : null;
 }
 
 export interface TargetDbRow {
@@ -617,7 +619,7 @@ export async function addTargetConnection(
     .values({
       name: input.alias,
       connectionAlias: input.alias,
-      connectionUrl: input.url,
+      connectionUrl: encryptUrl(input.url),
       environment: input.environment ?? "dev",
     })
     .returning();
