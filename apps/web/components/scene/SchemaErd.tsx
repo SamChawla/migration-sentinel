@@ -7,6 +7,8 @@ export type Sev = "green" | "amber" | "red";
 export interface SceneCol {
   name: string;
   type: string;
+  /** True only when fixture/schema metadata says so — never inferred from the name. */
+  pk?: boolean;
   affected: Affected;
   severity?: Sev;
   opLabel?: string;
@@ -38,7 +40,7 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
   const canvasRef = useRef<HTMLDivElement>(null);
   const cellRefs = useRef<Map<string, HTMLElement>>(new Map());
   const cardRefs = useRef<Map<string, HTMLElement>>(new Map());
-  const [paths, setPaths] = useState<{ d: string; mx: number; my: number; key: number }[]>([]);
+  const [paths, setPaths] = useState<{ d: string; mx: number; my: number; key: number; fromLeft: boolean }[]>([]);
   const [dims, setDims] = useState({ w: 0, h: 0 });
 
   const register = (map: React.MutableRefObject<Map<string, HTMLElement>>) => (key: string, el: HTMLElement | null) => {
@@ -72,7 +74,7 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
         const x2 = (fromLeft ? tr.left : tr.right) - cb.left;
         const y2 = tr.top + tr.height / 2 - cb.top;
         const mx = (x1 + x2) / 2;
-        return { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, mx, my: (y1 + y2) / 2, key: i };
+        return { d: `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`, mx, my: (y1 + y2) / 2, key: i, fromLeft };
       })
       .filter((p): p is NonNullable<typeof p> => p !== null);
     setPaths(next);
@@ -112,7 +114,9 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
         {edges.map((e, i) =>
           paths[i] ? (
             <div key={`lbl-${i}`} style={{ position: "absolute", left: paths[i].mx, top: paths[i].my, transform: "translate(-50%,-50%)", zIndex: 2, fontFamily: "var(--font-mono)", fontSize: 9.5, color: "var(--cyan)", background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 6, padding: "1px 6px", whiteSpace: "nowrap" }}>
-              1 — ∞
+              {/* ∞ sits at the referencing (from) endpoint, 1 at the referenced (to)
+                  endpoint — regardless of which card was laid out first. */}
+              {paths[i].fromLeft ? "∞ — 1" : "1 — ∞"}
             </div>
           ) : null,
         )}
@@ -133,7 +137,7 @@ export function SchemaErd({ tables, edges }: { tables: SceneTable[]; edges: FkEd
                 <div>
                   {t.columns.map((c) => {
                     const key = `${t.name}.${c.name}`;
-                    const isPk = pkCols.has(key) || c.name === "id";
+                    const isPk = c.pk === true || pkCols.has(key);
                     const isFk = fkCols.has(key);
                     const affected = c.affected !== "none";
                     return (
