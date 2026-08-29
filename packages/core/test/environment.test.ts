@@ -115,9 +115,14 @@ describe("normalizeSqlForPromotion — false-negative-safe SQL identity", () => 
     );
   });
 
-  it("does not touch content inside string literals beyond the whitespace rule", () => {
+  it("preserves whitespace inside string literals (collapsing them would false-positive)", () => {
     const a = normalizeSqlForPromotion("UPDATE t SET note = 'keep  -- this';");
-    expect(a).toContain("'keep -- this'");
+    expect(a).toContain("'keep  -- this'");
+  });
+
+  it("recognizes dollar-quote tags with digits like $tag1$", () => {
+    const a = normalizeSqlForPromotion("SELECT $tag1$hello  world$tag1$;");
+    expect(a).toContain("$tag1$hello  world$tag1$");
   });
 });
 

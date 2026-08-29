@@ -886,7 +886,8 @@ export type PromoteFailure =
   | "not_found"
   | "no_artifact"
   | "at_top"
-  | "no_connection";
+  | "no_connection"
+  | "already_promoted";
 
 /**
  * Clone a request one rung up the environment ladder: same promotion_group_id,
@@ -929,6 +930,21 @@ export async function createPromotedRequest(input: {
   if (!target) return { ok: false, reason: "no_connection" };
 
   const newId = await db.transaction(async (tx) => {
+    // Lock the source row to serialize concurrent promotions of the same request.
+    await tx.execute(sql`SELECT id FROM migration_request WHERE id = ${source.migration_request.id} FOR UPDATE`);
+
+    const existing = await tx
+      .select({ id: migrationRequest.id })
+      .from(migrationRequest)
+      .where(
+        and(
+          eq(migrationRequest.promotedFromRequestId, source.migration_request.id),
+          eq(migrationRequest.targetDatabaseId, target.id),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) return null;
+
     const [req] = await tx
       .insert(migrationRequest)
       .values({
@@ -970,6 +986,7 @@ export async function createPromotedRequest(input: {
     return req.id;
   });
 
+  if (!newId) return { ok: false, reason: "already_promoted" };
   return { ok: true, id: newId, environment: targetEnv };
 }
 
