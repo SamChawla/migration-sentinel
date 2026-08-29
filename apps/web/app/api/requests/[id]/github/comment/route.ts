@@ -32,10 +32,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  // A verdict comment only makes sense once the analysis produced one.
-  if (["received", "generating", "reviewing", "dry_running"].includes(rec.status)) {
+  // A verdict comment only makes sense once the analysis completed successfully.
+  const ELIGIBLE = new Set(["awaiting_approval", "approved", "applying", "applied", "rejected", "rolled_back"]);
+  if (!ELIGIBLE.has(rec.status)) {
     return NextResponse.json(
-      { error: "Analysis is still running — there is no verdict to post yet." },
+      { error: rec.status === "failed"
+          ? "Analysis failed — there is no valid verdict to post."
+          : "Analysis is still running — there is no verdict to post yet." },
       { status: 409 },
     );
   }
@@ -55,6 +58,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   try {
     const gh = createGithubClient({ token });
+
+    // Refuse to post a verdict if the PR head has moved since the analyzed commit.
+    const livePr = await gh.getPr(link.repo, link.prNumber);
+    if (livePr.headSha !== link.commitSha) {
+      return NextResponse.json(
+        {
+          error: `The PR head has moved (analyzed ${link.commitSha.slice(0, 7)}, now ${livePr.headSha.slice(0, 7)}). Re-analyze this migration before posting a verdict.`,
+          code: "head_drift",
+        },
+        { status: 409 },
+      );
+    }
+
     let commentId = link.commentId;
     if (commentId) {
       try {
@@ -67,9 +83,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       }
     }
     if (!commentId) {
-      const created = await gh.createComment(link.repo, link.prNumber, body);
-      commentId = created.id;
-      await setGithubLinkCommentId(id, commentId);
+      // Re-read to guard against a concurrent POST that created a comment
+      // between our initial read and here.
+      const freshLink = await getGithubLink(id);
+      if (freshLink?.commentId) {
+        commentId = freshLink.commentId;
+        await gh.updateComment(link.repo, commentId, body);
+      } else {
+        const created = await gh.createComment(link.repo, link.prNumber, body);
+        commentId = created.id;
+        await setGithubLinkCommentId(id, commentId);
+      }
     }
     try {
       await insertAuditEvent({

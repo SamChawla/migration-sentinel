@@ -121,7 +121,7 @@ export async function POST(req: Request) {
     title: effectiveTitle,
     targetDb,
     upSql: effectiveUpSql,
-    downSql,
+    downSql: prMeta ? "" : downSql,
     intent,
     pr: prMeta
       ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }

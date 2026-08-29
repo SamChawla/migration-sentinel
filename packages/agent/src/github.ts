@@ -35,10 +35,10 @@ export function reduceChecksState(
   runs: { status?: string | null; conclusion?: string | null }[],
 ): ChecksState {
   if (runs.length === 0) return "none";
-  if (runs.some((r) => ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? "")))
-    return "failure";
+  const SUCCESS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
   if (runs.some((r) => r.status !== "completed")) return "pending";
-  return "success";
+  if (runs.every((r) => SUCCESS_CONCLUSIONS.has(r.conclusion ?? ""))) return "success";
+  return "failure";
 }
 
 export interface PrFile {
@@ -139,15 +139,25 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
     },
 
     async getPrFiles(repo, number) {
-      const files = await call<Record<string, any>[]>(
-        "GET",
-        `/repos/${encodeRepo(repo)}/pulls/${Number(number)}/files?per_page=100`,
-      );
-      return (files ?? []).map((f) => ({
-        filename: String(f.filename ?? ""),
-        status: String(f.status ?? ""),
-        sha: String(f.sha ?? ""),
-      }));
+      const all: PrFile[] = [];
+      let page = 1;
+      while (page <= 30) {
+        const files = await call<Record<string, any>[]>(
+          "GET",
+          `/repos/${encodeRepo(repo)}/pulls/${Number(number)}/files?per_page=100&page=${page}`,
+        );
+        if (!files || files.length === 0) break;
+        for (const f of files) {
+          all.push({
+            filename: String(f.filename ?? ""),
+            status: String(f.status ?? ""),
+            sha: String(f.sha ?? ""),
+          });
+        }
+        if (files.length < 100) break;
+        page++;
+      }
+      return all;
     },
 
     async getFileContents(repo, path, ref) {
@@ -156,8 +166,21 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         "GET",
         `/repos/${encodeRepo(repo)}/contents/${encPath}?ref=${encodeURIComponent(ref)}`,
       );
-      if (typeof file.content !== "string") {
-        throw new GithubApiError(`No file content returned for ${path}.`, 502, path);
+      if (file.encoding === "none" || typeof file.content !== "string") {
+        const rawUrl = `${baseUrl}/repos/${encodeRepo(repo)}/contents/${encPath}?ref=${encodeURIComponent(ref)}`;
+        const raw = await fetchImpl(rawUrl, {
+          headers: {
+            Authorization: `Bearer ${opts.token}`,
+            Accept: "application/vnd.github.raw+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "migration-sentinel",
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        if (!raw.ok) {
+          throw new GithubApiError(`GitHub API ${raw.status} fetching raw ${path}`, raw.status, path);
+        }
+        return await raw.text();
       }
       return Buffer.from(file.content, "base64").toString("utf8");
     },
