@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getGithubLink, updateGithubLinkSync } from "@sentinel/db/queries";
+import { getGithubLink, updateGithubLinkSync, markExportMerged } from "@sentinel/db/queries";
 import { createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
 
@@ -34,6 +34,12 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
       checksState,
       htmlUrl: pr.htmlUrl,
     });
+    // Also refresh the EXPORT PR's cached merge state (PR4) — cosmetic for the
+    // "Apply now" button; the apply route re-verifies live before releasing.
+    if (link.exportPrNumber != null && link.exportPrState !== "merged") {
+      const merged = await gh.isMerged(link.repo, link.exportPrNumber).catch(() => false);
+      if (merged) await markExportMerged(id);
+    }
     const fresh = await getGithubLink(id);
     return NextResponse.json({ link: fresh });
   } catch (e) {

@@ -383,6 +383,15 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         </span>
       </div>
 
+      {/* Gate 2 (PR4): approved, exported, waiting on the source-of-truth merge. */}
+      {r.status === "awaiting_merge" && (
+        <div className="paused-banner" style={{ marginBottom: 14 }}>
+          <span className="pulse-dot" />
+          Approved at the Sentinel gate — the migration was exported to GitHub as a PR. A human merges it
+          there (gate 2), then Apply unlocks below. No production changes have been made.
+        </div>
+      )}
+
       {paused && (
         <div className="paused-banner" style={{ marginBottom: 14, ...(blocked ? { borderColor: "var(--danger)" } : {}) }}>
           <span className="pulse-dot" />
@@ -565,8 +574,16 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
             )}
           </div>
 
-          {/* GitHub PR link — chips + refresh + verdict comment */}
-          {githubLink && <GithubPanel requestId={r.id} link={githubLink} />}
+          {/* GitHub PR link — chips + refresh + verdict comment + export gate */}
+          {githubLink && (
+            <GithubPanel
+              requestId={r.id}
+              link={githubLink}
+              status={r.status}
+              requiresTypedConfirm={r.approval.requiresTypedConfirm || disposition === "typed_confirm"}
+              expectedConfirm={r.approval.expectedConfirm ?? null}
+            />
+          )}
 
           {/* Qodo review */}
           <div className="glass">

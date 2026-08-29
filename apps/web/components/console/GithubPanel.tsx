@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export interface GithubLinkView {
   repo: string;
@@ -13,6 +14,11 @@ export interface GithubLinkView {
   htmlUrl: string | null;
   lastSyncedAt: string | null;
   commentId: number | null;
+  exportBranch: string | null;
+  exportPrNumber: number | null;
+  exportPrUrl: string | null;
+  exportPrState: string | null;
+  exportMergedAt: string | null;
 }
 
 const CHECK_COLOR: Record<string, string> = {
@@ -27,10 +33,26 @@ const CHECK_COLOR: Record<string, string> = {
  * head SHA / checks, a live Refresh, and "Post verdict" which writes (or
  * idempotently updates) the Sentinel safety comment on the PR.
  */
-export function GithubPanel({ requestId, link: initial }: { requestId: string; link: GithubLinkView }) {
+export function GithubPanel({
+  requestId,
+  link: initial,
+  status,
+  requiresTypedConfirm = false,
+  expectedConfirm,
+}: {
+  requestId: string;
+  link: GithubLinkView;
+  /** The request's status — drives the export/apply view (awaiting_merge). */
+  status?: string;
+  /** Whether the gate demands a typed confirmation to release the apply. */
+  requiresTypedConfirm?: boolean;
+  expectedConfirm?: string | null;
+}) {
+  const router = useRouter();
   const [link, setLink] = useState(initial);
-  const [busy, setBusy] = useState<"refresh" | "comment" | null>(null);
+  const [busy, setBusy] = useState<"refresh" | "comment" | "apply" | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
+  const [confirm, setConfirm] = useState("");
 
   async function refresh() {
     setBusy("refresh");
@@ -64,8 +86,31 @@ export function GithubPanel({ requestId, link: initial }: { requestId: string; l
     }
   }
 
+  async function applyNow() {
+    setBusy("apply");
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/requests/${requestId}/apply`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requiresTypedConfirm ? { typedConfirm: confirm } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
+      setNotice({ tone: "ok", text: "Merge verified live — migration applied." });
+      router.refresh();
+    } catch (e) {
+      setNotice({ tone: "err", text: e instanceof Error ? e.message : "Apply failed." });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const state = link.prState ?? "unknown";
   const checks = link.checksState ?? "none";
+  const hasExport = link.exportPrNumber != null;
+  const exportMerged = link.exportPrState === "merged";
+  const awaitingMerge = status === "awaiting_merge";
 
   return (
     <div className="glass" style={{ padding: 14 }}>
@@ -96,6 +141,58 @@ export function GithubPanel({ requestId, link: initial }: { requestId: string; l
           <span style={{ color: CHECK_COLOR[checks] ?? "var(--faint)" }}>checks: {checks}</span>
         </div>
       </div>
+
+      {/* Export gate view (PR4) — the gate-2 PR Sentinel opened on approval. */}
+      {hasExport && (
+        <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 12.5 }}>
+            <span className="hud-label" style={{ margin: 0 }}>Export PR</span>
+            {link.exportPrUrl ? (
+              <a href={link.exportPrUrl} target="_blank" rel="noreferrer" style={{ fontWeight: 600 }}>
+                #{link.exportPrNumber}
+              </a>
+            ) : (
+              <span className="mono">#{link.exportPrNumber}</span>
+            )}
+            <span className={`sev-chip ${exportMerged ? "sev-green" : "sev-amber"}`} style={{ fontSize: 10 }}>
+              {link.exportPrState ?? "open"}
+            </span>
+            {link.exportBranch && (
+              <span className="mono" style={{ fontSize: 10, color: "var(--faint)" }}>{link.exportBranch}</span>
+            )}
+          </div>
+          {awaitingMerge && (
+            <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+              {!exportMerged && (
+                <p style={{ fontSize: 11.5, color: "var(--muted)", margin: 0 }}>
+                  A human merges this PR on GitHub (gate 2) — then Refresh, and Apply unlocks.
+                  The server re-verifies the merge live before anything runs.
+                </p>
+              )}
+              {requiresTypedConfirm && exportMerged && (
+                <input
+                  className="field field-mono"
+                  aria-label="Typed confirmation"
+                  placeholder={expectedConfirm ? `Type "${expectedConfirm}" to confirm` : "Typed confirmation"}
+                  value={confirm}
+                  onChange={(e) => setConfirm(e.target.value)}
+                />
+              )}
+              <div>
+                <button
+                  type="button"
+                  className="btn btn-cyan btn-sm"
+                  disabled={busy !== null || !exportMerged || (requiresTypedConfirm && !confirm.trim())}
+                  title={exportMerged ? undefined : "Unlocks once the export PR is merged (use Refresh after merging)"}
+                  onClick={applyNow}
+                >
+                  {busy === "apply" ? "Verifying merge…" : "Apply now"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
         <button type="button" className="btn btn-sm" disabled={busy !== null} onClick={refresh}>

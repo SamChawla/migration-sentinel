@@ -6,7 +6,7 @@ const PRINCIPLES = [
   { ico: "⏸️", title: "The gate is the product", body: "Every migration pauses at a human checkpoint before touching production. The agent is physically paused — it cannot self-approve. This is the one thing we refuse to compromise on." },
   { ico: "🔬", title: "Prove, don’t promise", body: "Rollback verification runs on a shadow clone. Blast radius comes from the database’s own planner. Nothing is estimated — everything is tested." },
   { ico: "🪶", title: "Zero production data", body: "We never clone production data. Schema-only shadows and read-only catalog queries mean near-zero cost and no compliance risk." },
-  { ico: "🤝", title: "Open architecture", body: "Built on Postgres, Drizzle, and standard SQL tooling. No proprietary lock-in, no custom DSL. Your existing migration workflow stays intact." },
+  { ico: "🤝", title: "Open architecture", body: "Built on Postgres, Drizzle, and standard SQL tooling. No proprietary lock-in, no custom DSL. Prod changes flow back to your repo as a reviewable PR, so your merge workflow stays the owner of production." },
 ];
 
 const STACK = [
