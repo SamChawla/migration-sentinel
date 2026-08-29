@@ -8,7 +8,7 @@ import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readout
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
 import { MigrationChat } from "@/components/console/MigrationChat";
-import { Db3D } from "@/components/scene/Db3D";
+import { SchemaErd, type SceneTable, type FkEdge } from "@/components/scene/SchemaErd";
 import { AutoRefresh } from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
@@ -48,6 +48,7 @@ type Sev = "green" | "amber" | "red";
 interface SceneCol {
   name: string;
   type: string;
+  pk?: boolean;
   affected: Affected;
   severity?: Sev;
   opLabel?: string;
@@ -56,9 +57,9 @@ interface SceneCol {
 // Real demo-target schema (fixtures/target_schema.sql). The 3D reflects the
 // actual table the migration touches, so decided (applied/rejected/blocked)
 // requests still render their table instead of an empty stack.
-const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
+const DEMO_TABLES: Record<string, { name: string; type: string; pk?: boolean }[]> = {
   users: [
-    { name: "id", type: "bigserial" },
+    { name: "id", type: "bigserial", pk: true },
     { name: "email", type: "text" },
     { name: "full_name", type: "text" },
     { name: "is_active", type: "boolean" },
@@ -66,7 +67,7 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
     { name: "created_at", type: "timestamptz" },
   ],
   orders: [
-    { name: "id", type: "bigserial" },
+    { name: "id", type: "bigserial", pk: true },
     { name: "user_id", type: "bigint" },
     { name: "amount_cents", type: "integer" },
     { name: "status", type: "text" },
@@ -78,26 +79,92 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
  *  migration SQL. Uses the REAL parsed table name; borrows fixture columns only
  *  for tables we have a fixture for, otherwise shows only the columns the
  *  migration touches (rather than fabricating an unrelated schema). */
+// Sentinel for "the migration's table could not be identified". It must NOT be a
+// real fixture table, so it never matches SCHEMA_FKS and never fabricates a FK.
+const UNPARSED_TABLE = "public.?";
+
+// Own-property lookup: the SQL is user text, so identifiers like "constructor"
+// or "toString" must not resolve to Object.prototype members and crash the
+// scene build when we try to .map() them.
+function fixtureColumns(table: string): { name: string; type: string; pk?: boolean }[] | undefined {
+  return Object.prototype.hasOwnProperty.call(DEMO_TABLES, table) ? DEMO_TABLES[table] : undefined;
+}
+
+/** Split CREATE TABLE column definitions on commas, but respect parenthesized
+ *  sub-expressions like numeric(10,2) so they don't become two fragments. */
+function splitDefs(block: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let depth = 0;
+  for (const ch of block) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/** Extract a column type from the remaining definition text, handling multi-word
+ *  types (double precision, character varying) and parenthesized params (numeric(10,2)). */
+function parseColumnType(rest: string): string {
+  const r = rest.trim();
+  const m = r.match(/^(\w+(?:\s*\([^)]*\))?(?:\s+(?:precision|varying|without|with|time|zone)\w*)*)/i);
+  return m ? m[1].trim() : r.split(/\s/)[0] || "—";
+}
+
 function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   const sql = upSql.toLowerCase();
 
+  // Table identifier: optional "schema"."table" with double-quote + any schema support
+  const T = String.raw`(?:"?(\w+)"?\.)?"?(\w+)"?`;
   const tableMatch =
-    sql.match(/(?:drop|alter|truncate)\s+table\s+(?:only\s+)?(?:public\.)?(\w+)/) ||
-    sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
-    sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
-  const parsed = tableMatch?.[1];
-  const known = parsed && parsed in DEMO_TABLES;
+    sql.match(new RegExp(String.raw`(?:drop|alter)\s+table\s+(?:only\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`\btruncate\s+(?:table\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`create\s+table\s+(?:if\s+not\s+exists\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`(?:update|delete\s+from|insert\s+into)\s+${T}`)) ||
+    sql.match(new RegExp(String.raw`create\s+index[^;]*\bon\s+${T}`));
+  const schema = tableMatch?.[1] ?? "public";
+  const parsed = tableMatch?.[2];
+  // Only use fixture columns when the schema is "public" — an identically named
+  // table in another schema (e.g. audit.users) must not inherit public.users cols.
+  const fixture = parsed && schema === "public" ? fixtureColumns(parsed) : undefined;
 
-  // Use the REAL parsed table name. Only borrow the fixture COLUMNS when the table
-  // is one we actually have a fixture for — otherwise start EMPTY so a migration
-  // against an unknown table isn't fabricated as public.users with unrelated
-  // columns (the op-specific logic below still highlights the columns it touches).
-  const table = `public.${parsed ?? "users"}`;
-  let columns: SceneCol[] = known
-    ? DEMO_TABLES[parsed as keyof typeof DEMO_TABLES].map((c) => ({ ...c, affected: "none" }))
-    : [];
+  const table = parsed ? `${schema}.${parsed}` : UNPARSED_TABLE;
+  const isCreate = /\bcreate\s+table\b/.test(sql);
+  // For CREATE TABLE, parse the column definitions from the SQL body rather than
+  // preloading fixtures (which would duplicate cols for known tables like users).
+  let columns: SceneCol[] = !isCreate && fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
   const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
     columns.map((c) => ({ ...c, affected, severity, opLabel }));
+
+  if (isCreate) {
+    const colBlock = sql.match(/\(([\s\S]+)\)/)?.[1] ?? "";
+    const defs = splitDefs(colBlock);
+    const skip = new Set(["constraint", "primary", "unique", "foreign", "check", "exclude"]);
+    const pkCols = new Set<string>();
+    for (const def of defs) {
+      // Table-level PRIMARY KEY (col1, col2) → mark those cols as PK after parsing all defs.
+      const pkm = def.match(/^\s*primary\s+key\s*\(([^)]+)\)/);
+      if (pkm) { pkm[1].split(",").forEach((c) => pkCols.add(c.trim().replace(/^"|"$/g, ""))); continue; }
+
+      const cm = def.match(/^"?(\w+)"?\s+(.+)/);
+      if (cm && !skip.has(cm[1])) {
+        columns.push({
+          name: cm[1], type: parseColumnType(cm[2]),
+          pk: /\bprimary\s+key\b/.test(def) || undefined,
+          affected: "add", severity: "green", opLabel: "CREATE TABLE",
+        });
+      }
+    }
+    for (const c of columns) { if (pkCols.has(c.name)) c.pk = true; }
+    return { table, columns };
+  }
 
   // Whole-table destruction → the entire stack is affected.
   if (/\bdrop\s+table\b/.test(sql)) return { table, columns: tint("table", "red", "DROP TABLE") };
@@ -184,6 +251,42 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   return { table, columns };
 }
 
+// Foreign-key edges of the demo schema (fixtures/target_schema.sql). Drives the
+// "affected table + FK neighbours" view.
+const SCHEMA_FKS: FkEdge[] = [
+  { fromTable: "public.orders", fromCol: "user_id", toTable: "public.users", toCol: "id" },
+];
+
+/** Expand the single-table model into the affected table PLUS its FK-neighbour
+ *  tables + the edges between them, so the 3D shows how the change is linked. */
+function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
+  const primary = db3dModel(upSql);
+  const primaryName = primary.table; // a real "public.<table>", or UNPARSED_TABLE
+  // Only a confidently identified table drives FK-neighbour expansion — an
+  // unparsed statement must not inherit a fixture's relationships.
+  const parsedTarget = primaryName !== UNPARSED_TABLE;
+  // If the parse couldn't attribute columns but the table IS a known fixture,
+  // still show its columns (so the card isn't empty and FK links can anchor).
+  let primaryCols = primary.columns;
+  if (primaryCols.length === 0) {
+    const fix = fixtureColumns(primaryName.replace(/^public\./, ""));
+    if (fix) primaryCols = fix.map((c) => ({ ...c, affected: "none" as Affected }));
+  }
+  const tables: SceneTable[] = [{ name: primaryName, columns: primaryCols, role: "primary" }];
+
+  const edges = parsedTarget
+    ? SCHEMA_FKS.filter((e) => e.fromTable === primaryName || e.toTable === primaryName)
+    : [];
+  const neighbours = new Set<string>();
+  for (const e of edges) neighbours.add(e.fromTable === primaryName ? e.toTable : e.fromTable);
+
+  for (const name of neighbours) {
+    const cols = fixtureColumns(name.replace(/^public\./, ""));
+    if (cols) tables.push({ name, columns: cols.map((c) => ({ ...c, affected: "none" as Affected })), role: "related" });
+  }
+  return { tables, edges };
+}
+
 export default async function ApprovalConsole({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const r = await getRequest(id);
@@ -204,7 +307,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   const blocked = disposition === "blocked";
   const decidable = r.status === "awaiting_approval" || r.status === "blocked";
   const paused = decidable;
-  const scene = db3dModel(r.upSql);
+  const scene = db3dScene(r.upSql);
 
   // Whether the safety pipeline has actually produced a verdict yet. getRequest()
   // substitutes overallSeverity='green' when no blast report exists, so a freshly
@@ -271,7 +374,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 3D Database */}
           <div className="glass glass-energized" style={{ padding: 0 }}>
-            <Db3D table={scene.table} columns={scene.columns} />
+            <SchemaErd tables={scene.tables} edges={scene.edges} />
           </div>
 
           {/* SQL wells */}
