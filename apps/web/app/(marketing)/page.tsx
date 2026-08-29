@@ -2,135 +2,337 @@ import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-// Demo: when open access is on, the console needs no login — link straight in.
-const OPEN_ACCESS = ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").toLowerCase());
+const OPEN_ACCESS = ["1", "true", "yes"].includes(
+  (process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").toLowerCase()
+);
 
-type Tone = "cyan" | "warn" | "safe" | "danger";
-const PIPELINE: { n: string; title: string; sub: string; tone: Tone; gate?: boolean }[] = [
-  { n: "01", title: "Intake", sub: "plain English, SQL, or a PR", tone: "cyan" },
-  { n: "02", title: "Generate", sub: "paired up + down SQL", tone: "cyan" },
-  { n: "03", title: "Qodo review", sub: "advisory code review", tone: "cyan" },
-  { n: "04", title: "Shadow dry-run", sub: "blast radius + rollback proof", tone: "warn" },
-  { n: "05", title: "Human gate", sub: "you decide — agent cannot", tone: "warn", gate: true },
-  { n: "06", title: "Guarded apply", sub: "timeouts, txn, auto-rollback", tone: "safe" },
-  { n: "07", title: "Audit", sub: "append-only record", tone: "safe" },
+const STEPS = [
+  { n: "1", name: "Intake", desc: "Plain English, SQL, or a PR diff" },
+  { n: "2", name: "Generate", desc: "Paired up + down migration" },
+  { n: "3", name: "Code review", desc: "Advisory review via Qodo" },
+  { n: "4", name: "Shadow dry-run", desc: "Blast radius + rollback proof" },
+  { n: "5", name: "Human gate", desc: "You decide — agent cannot proceed", gate: true },
+  { n: "6", name: "Guarded apply", desc: "Timeouts, txn, auto-rollback" },
+  { n: "7", name: "Audit", desc: "Append-only record" },
 ];
 
-const CAPABILITIES: { n: string; title: string; body: string; phase: string; tone: Tone }[] = [
-  { n: "01", title: "Blast radius before prod", body: "A shadow dry-run plus your database's own planner statistics tell you rows affected, lock type, and estimated downtime — before anything runs.", phase: "Analyze", tone: "warn" },
-  { n: "02", title: "Rollback proven, not assumed", body: "Every migration's down script is executed on a shadow clone and the schema diffed back. If data can't be restored, we say so — honestly.", phase: "Prove", tone: "safe" },
-  { n: "03", title: "A human gate, keyed to danger", body: "Irreversible operations demand a typed confirmation. The gate is enforced server-side, independently of the agent — the model cannot self-approve.", phase: "Gate", tone: "danger" },
-  { n: "04", title: "Author from intent", body: "Describe the change in plain English or paste a PR — the agent writes a safe up/down pair for you.", phase: "Intake", tone: "cyan" },
-  { n: "05", title: "Data pre-flight probes", body: "SET NOT NULL with existing NULLs? We probe the real data read-only, catch the failure before it happens, and regenerate a two-phase migration.", phase: "Analyze", tone: "warn" },
-  { n: "06", title: "Near-zero cost", body: "No production data is ever cloned. Schema-only shadows + read-only catalog stats — the only real cost is a few model calls.", phase: "Prove", tone: "safe" },
+const CAPABILITIES = [
+  { title: "Blast radius before prod", desc: "Shadow dry-run plus your database's own planner statistics: rows affected, lock type, estimated downtime — before anything runs." },
+  { title: "Rollback proven, not assumed", desc: "Every migration's down script is executed on a shadow clone and the schema diffed back. If data can't be restored, we say so." },
+  { title: "Human gate, keyed to danger", desc: "Irreversible operations demand typed confirmation. The gate is enforced server-side — the model cannot self-approve." },
+  { title: "Author from intent", desc: "Describe the change in plain English or paste a PR. The agent writes a safe up/down pair for you." },
+  { title: "Data pre-flight probes", desc: "SET NOT NULL with existing NULLs? We probe the real data read-only, catch the failure before it happens, and regenerate a two-phase migration." },
+  { title: "Near-zero cost", desc: "No production data is ever cloned. Schema-only shadows + read-only catalog stats — the only real cost is a few model calls." },
 ];
+
+type Cell = { cls: string; text: string };
+const TOOLS: { name: string; cells: Cell[]; highlight?: boolean }[] = [
+  { name: "Alembic", cells: [
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Django Migrations", cells: [
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Flyway", cells: [
+    { cls: "no", text: "—" }, { cls: "yes", text: "Yes" },
+    { cls: "no", text: "—" }, { cls: "partial", text: "Undo (paid)" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Liquibase", cells: [
+    { cls: "partial", text: "Diff-based" }, { cls: "yes", text: "Yes" },
+    { cls: "partial", text: "updateSQL" }, { cls: "partial", text: "Manual" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Atlas", cells: [
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "partial", text: "Lint only" }, { cls: "no", text: "—" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Prisma Migrate", cells: [
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+    { cls: "no", text: "—" }, { cls: "no", text: "—" },
+  ] },
+  { name: "Migration Sentinel", cells: [
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+    { cls: "yes", text: "Yes" }, { cls: "yes", text: "Yes" },
+  ], highlight: true },
+];
+
+const Arrow = () => (
+  <div className="flow-arrow">
+    <svg viewBox="0 0 20 20" fill="none">
+      <path d="M7 4L13 10L7 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  </div>
+);
 
 export default function Landing() {
   return (
     <>
-      <div className="mk-statusbar">
-        <span className="mk-status-live">
-          <span className="dot" /> Human-gated · read-only until you approve
-        </span>
-        <span className="mk-status-target">
-          Connect any Postgres <span className="sep">·</span>{" "}
-          <Link href="/login" className="mk-status-link">link your own databases →</Link>
-        </span>
-      </div>
-
-      <header className="hero">
-        <span className="mk-eyebrow">
-          <span className="mk-eyebrow-dot" />
-          TrueForge Agent Harness Hackathon · WeMakeDevs × TrueFoundry
-        </span>
-        <h1>
-          The AI agent that migrates your database —<br />
-          and <span className="accent">pauses before anything</span> <span style={{ color: "var(--danger)" }}>irreversible</span>.
-        </h1>
-        <p className="lead">
-          Schema migrations are the most dangerous routine operation in software. Migration Sentinel plans them,
-          dry-runs them on a shadow database, proves the rollback, and refuses to touch prod until a human approves.
-        </p>
-        <div className="hero-ctas">
-          <Link href={OPEN_ACCESS ? "/dashboard" : "/login"} className="btn btn-cyan btn-lg">
-            {OPEN_ACCESS ? "Open the Console" : "Login to Console"}
-          </Link>
-          <Link href="/demo" className="btn btn-lg">Watch the replay demo</Link>
+      {/* ── HERO ── */}
+      <section className="ed-hero">
+        <div className="hero-main">
+          <p className="hero-context">TrueForge Agent Harness Hackathon &middot; WeMakeDevs &times; TrueFoundry</p>
+          <h1>The migration agent that <em>pauses before anything irreversible.</em></h1>
+          <p className="hero-body">
+            Schema migrations are the most dangerous routine operation in software.
+            Sentinel plans them, dry-runs on a shadow database, proves the rollback,
+            and won&apos;t touch production until you approve.
+          </p>
+          <div className="hero-actions">
+            <Link href={OPEN_ACCESS ? "/dashboard" : "/login"} className="btn-dark">
+              Open the console
+            </Link>
+            <Link href="/demo" className="btn-ghost">Watch replay demo</Link>
+          </div>
         </div>
-        <p style={{ margin: "14px 0 0", fontSize: 13, color: "var(--text-dim)" }}>
-          {OPEN_ACCESS
-            ? "No login for the demo — click Open the Console and you're in."
-            : "Demo credentials are pre-filled — just click Login to Console. No signup."}
-        </p>
-      </header>
 
-      <section className="mk-section" id="how">
-        <div className="mk-kicker"><span /> Pipeline</div>
-        <h2 style={{ textAlign: "left" }}>One migration, seven checkpoints</h2>
-        <p className="sect-sub" style={{ textAlign: "left", margin: "0 0 2rem" }}>
-          Every request travels the same pipeline. Nothing skips the gate — the agent is physically
-          paused until you decide.
-        </p>
-
-        <div className="mk-pipe">
-          {PIPELINE.map((s) => (
-            <div key={s.n} className={`mk-pipe-cell${s.gate ? " gate" : ""}`}>
-              <div className={`mk-pipe-num tone-${s.tone}`}>{s.n}</div>
-              <div className={`mk-pipe-bar tone-${s.tone}`} />
-              <div className="mk-pipe-title">{s.title}</div>
-              <div className="mk-pipe-sub">{s.sub}</div>
+        <div>
+          <div className="hero-card">
+            <div className="hero-card-header">
+              <span>Migration #24</span>
+              <span className="status-safe">Safe</span>
             </div>
-          ))}
-        </div>
-
-        <p className="mk-aside">
-          <b>Alembic is <span className="mono">git commit</span>.</b>{" "}
-          Migration Sentinel is the CI + code review + &ldquo;are you sure?&rdquo; gate that runs before that commit hits production.
-        </p>
-      </section>
-
-      <section className="mk-section" id="features">
-        <div className="mk-kicker"><span /> Capabilities</div>
-        <h2 style={{ textAlign: "left" }}>What only Migration Sentinel does</h2>
-        <p className="sect-sub" style={{ textAlign: "left", margin: "0 0 2rem" }}>
-          Not another migration runner — the analyze → prove → gate layer in front of the tools you already use.
-        </p>
-
-        <div className="mk-caps">
-          {CAPABILITIES.map((c) => (
-            <div key={c.n} className="mk-cap-row">
-              <div className="mk-cap-num">{c.n}</div>
-              <div className="mk-cap-title">{c.title}</div>
-              <div className="mk-cap-body">{c.body}</div>
-              <div className={`mk-cap-phase tone-${c.tone}`}>
-                <span className="dot" /> {c.phase}
+            <div className="hero-card-body">
+              <div className="hero-card-row">
+                <span className="label">Operation</span>
+                <span className="value safe">ADD COLUMN</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Table</span>
+                <span className="value">users</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Rows affected</span>
+                <span className="value">0</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Rollback</span>
+                <span className="value safe">{"✓"} verified</span>
               </div>
             </div>
-          ))}
+          </div>
+
+          <div className="hero-card">
+            <div className="hero-card-header">
+              <span>Migration #25</span>
+              <span className="status-risk">High risk</span>
+            </div>
+            <div className="hero-card-body">
+              <div className="hero-card-row">
+                <span className="label">Operation</span>
+                <span className="value danger">DROP COLUMN</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Table</span>
+                <span className="value">users.legacy_email</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Non-null values</span>
+                <span className="value danger">847,291</span>
+              </div>
+              <div className="hero-card-row">
+                <span className="label">Rollback</span>
+                <span className="value danger">{"✗"} data loss permanent</span>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
-      <section className="mk-section">
-        <div className="glass mk-demo">
-          <div className="mk-demo-head">
-            <span className="mk-kicker mk-kicker-danger"><span /> Live demo</span>
-            <span className="mk-status-live warn">
-              <span className="dot" /> 2 migrations awaiting operator
-            </span>
-          </div>
-          <div className="mk-demo-body">
-            <h2>See the gate refuse a <span className="mono" style={{ color: "var(--danger)" }}>DROP COLUMN</span></h2>
-            <p className="sect-sub" style={{ margin: "0 auto 1.6rem" }}>
-              Two migrations are waiting in the console right now — one safe, one irreversible. Decide for yourself.
-            </p>
-            <div className="hero-ctas">
-              <Link href="/login" className="btn btn-cyan btn-lg">Open the approval console</Link>
+      {/* ── SIGNATURE MOMENT ── */}
+      <div className="blocked">
+        <div className="blocked-sql">
+          <span className="kw">ALTER TABLE</span> users{" "}
+          <span className="kw">DROP COLUMN</span> legacy_email;
+        </div>
+        <p className="blocked-caption">
+          847,291 non-null values. Irreversible. The agent generated this migration,
+          proved it can&apos;t be rolled back, and <strong>escalated</strong> —
+          it requires you to type the exact confirmation before it will apply.
+          Unbounded destruction (a bare DELETE, a DROP TABLE) goes further:
+          the gate <strong>refuses outright</strong>, approval or not.
+        </p>
+      </div>
+
+      {/* ── PIPELINE ── */}
+      <section className="pipeline" id="pipeline">
+        <div className="pipeline-header">
+          <h2>One migration, seven checkpoints.</h2>
+          <p>Every request travels the same path. Nothing skips the gate — the agent is physically paused until you decide.</p>
+        </div>
+        <div className="pipeline-steps">
+          {STEPS.map((s) => (
+            <div key={s.n} className={`p-step${s.gate ? " gate" : ""}`}>
+              <div className="p-step-num">{s.n}</div>
+              <div className="p-step-name">{s.name}</div>
+              <div className="p-step-desc">{s.desc}</div>
             </div>
-            <p style={{ marginTop: "1rem", fontSize: ".82rem", color: "var(--muted)" }}>
-              Demo login: <span className="mono">admin / admin</span>
+          ))}
+        </div>
+        <p className="pipeline-footnote">
+          Think of it this way: <code>alembic</code> is <code>git commit</code>.
+          Migration Sentinel is the CI + code review + {"“"}are you sure?{"”"} gate
+          that runs before that commit hits production.
+        </p>
+      </section>
+
+      {/* ── CAPABILITIES ── */}
+      <section className="capabilities" id="capabilities">
+        <div className="cap-inner">
+          <div className="cap-header">
+            <h2>What only Sentinel does.</h2>
+            <p>Six things your migration tool doesn&apos;t do today — and the reason none of them require you to switch tools.</p>
+          </div>
+          <div className="cap-list">
+            {CAPABILITIES.map((c) => (
+              <div key={c.title} className="cap-item">
+                <div className="cap-item-title">{c.title}</div>
+                <div className="cap-item-desc">{c.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ── WHERE IT FITS ── */}
+      <section className="positioning" id="positioning">
+        <div className="pos-header">
+          <h2>Your ORM writes migrations. Sentinel makes them safe.</h2>
+          <div className="pos-header-text">
+            <p>
+              Django, SQLAlchemy, Prisma — they all generate migration files.
+              Alembic, Flyway, Liquibase — they all track and apply them.
+              None of them analyze what the migration will actually do to your data before it runs.
+            </p>
+            <p>
+              Sentinel isn&apos;t a replacement for any of these. It&apos;s the missing
+              layer between {"“"}migration generated{"”"} and {"“"}migration
+              applied to prod{"”"} — the safety gate that doesn&apos;t exist in your current stack.
             </p>
           </div>
         </div>
+
+        <div className="flow">
+          <div className="flow-stage">
+            <div className="flow-stage-label">You already have this</div>
+            <div className="flow-stage-title">ORM / Schema definition</div>
+            <div className="flow-stage-body">
+              Your models change. The ORM generates a migration file describing the diff.
+            </div>
+            <div className="flow-stage-tools">
+              <span className="flow-tool">Django ORM</span>
+              <span className="flow-tool">SQLAlchemy</span>
+              <span className="flow-tool">Prisma</span>
+              <span className="flow-tool">TypeORM</span>
+            </div>
+          </div>
+
+          <Arrow />
+
+          <div className="flow-stage sentinel">
+            <div className="flow-stage-label">Sentinel sits here</div>
+            <div className="flow-stage-title">Analyze &rarr; Prove &rarr; Gate</div>
+            <div className="flow-stage-body">
+              Shadow dry-run, blast radius analysis, rollback verification, human
+              approval. All before anything touches production.
+            </div>
+          </div>
+
+          <Arrow />
+
+          <div className="flow-stage">
+            <div className="flow-stage-label">You already have this</div>
+            <div className="flow-stage-title">Migration runner</div>
+            <div className="flow-stage-body">
+              Once approved, your existing tool applies the migration. Sentinel
+              doesn&apos;t replace your runner — it guards it.
+            </div>
+            <div className="flow-stage-tools">
+              <span className="flow-tool">Alembic</span>
+              <span className="flow-tool">Flyway</span>
+              <span className="flow-tool">Liquibase</span>
+              <span className="flow-tool">Atlas</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flow-compare">
+          <div className="flow-compare-card without">
+            <div className="flow-compare-label">Without Sentinel</div>
+            <div className="flow-compare-steps">
+              <div>models.py changed</div>
+              <div>&rarr; makemigrations</div>
+              <div>&rarr; migrate <span className="dimmed">&larr; hope for the best</span></div>
+              <div><span className="strike">&rarr; 3 AM incident page</span></div>
+            </div>
+          </div>
+          <div className="flow-compare-card with">
+            <div className="flow-compare-label">With Sentinel</div>
+            <div className="flow-compare-steps">
+              <div>models.py changed</div>
+              <div>&rarr; makemigrations</div>
+              <div className="added">&rarr; sentinel: dry-run, prove rollback, show blast radius</div>
+              <div className="added">&rarr; human approves (or rejects)</div>
+              <div>&rarr; migrate</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── COMPARISON TABLE ── */}
+      <section className="comparison" id="compare">
+        <div className="comparison-inner">
+          <div className="comparison-header">
+            <h2>Sentinel complements your existing tools.</h2>
+            <p>Every tool below handles one part of the migration lifecycle. Sentinel adds the safety layer none of them have.</p>
+          </div>
+          <div className="comp-table-wrap">
+            <table className="comp-table">
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th>Generates migrations</th>
+                  <th>Tracks history</th>
+                  <th>Shadow dry-run</th>
+                  <th>Proves rollback</th>
+                  <th>Blast radius</th>
+                  <th>Human gate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {TOOLS.map((t) => (
+                  <tr key={t.name} className={t.highlight ? "sentinel-row" : undefined}>
+                    <td>{t.name}</td>
+                    {t.cells.map((c, i) => (
+                      <td key={i}><span className={c.cls}>{c.text}</span></td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="comp-note">
+            Sentinel works alongside these tools, not instead of them. Use your ORM to
+            define schemas, your migration tool to track versions, and Sentinel to make
+            sure nothing dangerous reaches production without your approval.
+          </p>
+        </div>
+      </section>
+
+      {/* ── DEMO CTA ── */}
+      <section className="demo" id="demo">
+        <h2>See the gate catch a <span className="drop">DROP COLUMN</span></h2>
+        <p>Two migrations are waiting in the console — one safe, one irreversible. Decide for yourself.</p>
+        <Link href="/demo" className="demo-cta">
+          Watch the replay demo
+        </Link>
       </section>
     </>
   );

@@ -1,43 +1,46 @@
 import Link from "next/link";
+import Image from "next/image";
 
 export function MarketingFooter() {
   return (
-    <footer className="mk-footer">
-      <div className="mk-footer-inner">
-        <div className="mk-footer-grid">
-          <div className="mk-footer-brand">
-            <span className="mk-logo" style={{ fontSize: "1rem" }}>
-              <img src="/brand/emblem.png" alt="Migration Sentinel" style={{ display: "block", height: 24, width: "auto" }} />
-              <span className="mk-logo-text">Migration <span className="mk-logo-accent">Sentinel</span></span>
-            </span>
-            <p style={{ fontSize: ".82rem", marginTop: ".5rem", maxWidth: 280, color: "var(--muted)" }}>
-              The AI migration agent that pauses before anything irreversible.
-            </p>
+    <footer className="ed-footer">
+      <div className="footer-inner">
+        <div className="footer-left">
+          <div className="footer-brand" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <Image src="/brand/emblem.png" alt="" width={22} height={22} />
+            <span>Migration Sentinel</span>
           </div>
-          <div className="mk-footer-col">
-            <div className="mk-footer-heading">Product</div>
-            <Link href="/#how">How it works</Link>
-            <Link href="/#features">Features</Link>
+          <p>The AI migration agent that pauses<br />before anything irreversible.</p>
+        </div>
+        <div className="footer-cols">
+          <div className="footer-col">
+            <div className="footer-col-title">Product</div>
+            <Link href="/#pipeline">How it works</Link>
+            <Link href="/#capabilities">Features</Link>
             <Link href="/demo">Live demo</Link>
             <Link href="/pricing">Pricing</Link>
           </div>
-          <div className="mk-footer-col">
-            <div className="mk-footer-heading">Resources</div>
+          <div className="footer-col">
+            <div className="footer-col-title">Resources</div>
             <Link href="/docs">Documentation</Link>
-            <Link href="/about">About</Link>
             <Link href="/docs#architecture">Architecture</Link>
             <Link href="/docs#safety">Safety model</Link>
+            <Link href="/about">About</Link>
           </div>
-          <div className="mk-footer-col">
-            <div className="mk-footer-heading">Connect</div>
+          <div className="footer-col">
+            <div className="footer-col-title">Connect</div>
             <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
             <Link href="/login">Sign in</Link>
             <Link href="/demo">Try the demo</Link>
           </div>
         </div>
-        <div className="mk-footer-bottom">
-          <span>© 2026 Migration Sentinel. Built for the TrueForge Agent Harness Hackathon.</span>
-          <span>Postgres · TrueForge · Qodo</span>
+      </div>
+      <div className="footer-bottom">
+        <p>&copy; 2026 Migration Sentinel. Built for the TrueForge Agent Harness Hackathon.</p>
+        <div className="footer-tech">
+          <span>Postgres</span>
+          <span>TrueForge</span>
+          <span>Qodo</span>
         </div>
       </div>
     </footer>
