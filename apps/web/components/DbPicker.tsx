@@ -1,10 +1,13 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ENV_ORDER, type DbEnvironment } from "@sentinel/core";
+import { EnvBadge } from "./EnvBadge";
 
 interface Conn {
   id: string;
   name: string;
   alias: string;
+  environment: DbEnvironment;
   hasUrl: boolean;
 }
 
@@ -17,6 +20,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
   const [adding, setAdding] = useState(false);
   const [alias, setAlias] = useState("");
   const [url, setUrl] = useState("");
+  const [env, setEnv] = useState<DbEnvironment>("dev");
   const [testing, setTesting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -64,7 +68,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
       const res = await fetch("/api/connections", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ alias: alias.trim(), url: url.trim() }),
+        body: JSON.stringify({ alias: alias.trim(), url: url.trim(), environment: env }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
@@ -75,6 +79,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
       setOpen(false);
       setAlias("");
       setUrl("");
+      setEnv("dev");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not add the connection.");
     } finally {
@@ -107,6 +112,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
       >
         <span aria-hidden="true" title={selected?.hasUrl ? "Connection configured (URL stored)" : "No stored URL"} style={{ width: 7, height: 7, borderRadius: "50%", background: selected?.hasUrl ? "var(--cyan)" : "var(--faint)", flexShrink: 0 }} />
         <span style={{ color: value ? "var(--text)" : "var(--faint)" }}>{value || "Select a target database…"}</span>
+        {selected && <EnvBadge env={selected.environment} />}
         <span style={{ marginLeft: "auto", color: "var(--faint)", fontSize: 12 }}>▾</span>
       </button>
 
@@ -153,7 +159,10 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                       style={{ width: 7, height: 7, borderRadius: "50%", background: c.hasUrl ? "var(--cyan)" : "var(--faint)" }}
                     />
                     <span className="mono">{c.alias}</span>
-                    {!c.hasUrl && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)" }}>no url</span>}
+                    <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      {!c.hasUrl && <span style={{ fontSize: 10, color: "var(--faint)" }}>no url</span>}
+                      <EnvBadge env={c.environment} />
+                    </span>
                   </button>
                 ))}
                 {loadError ? (
@@ -184,6 +193,17 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                   <form> and would start a migration against the old target. */}
               <input className="field" placeholder="Alias (e.g. staging-db)" value={alias} onChange={(e) => setAlias(e.target.value)} onKeyDown={onAddKeyDown} />
               <input className="field field-mono" placeholder="postgres://user:pass@host:5432/db" value={url} onChange={(e) => setUrl(e.target.value)} onKeyDown={onAddKeyDown} />
+              <select
+                className="field"
+                aria-label="Environment"
+                value={env}
+                onChange={(e) => setEnv(e.target.value as DbEnvironment)}
+                style={{ cursor: "pointer" }}
+              >
+                {ENV_ORDER.map((e) => (
+                  <option key={e} value={e}>{e}</option>
+                ))}
+              </select>
               {error && <div className="inline-error" role="alert">{error}</div>}
               <div style={{ display: "flex", gap: 8 }}>
                 <button type="button" className="btn btn-sm" onClick={() => { setAdding(false); setError(null); }}>Cancel</button>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { RequestRecord } from "@sentinel/db/queries";
 import { SeverityChip, StatusChip } from "@/components/chips";
+import { EnvBadge } from "@/components/EnvBadge";
 import { timeAgo } from "@/lib/format";
 
 const FILTERS = [
@@ -120,7 +121,12 @@ export function RequestsTable({
                   <Link href={`/requests/${r.id}`} style={{ color: "var(--text)", fontWeight: 600 }}>{r.title}</Link>
                   <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{r.id}</div>
                 </td>
-                <td className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>{r.targetDb}</td>
+                <td className="mono" style={{ fontSize: 12, color: "var(--muted)" }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
+                    {r.targetDb}
+                    <EnvBadge env={r.environment} />
+                  </span>
+                </td>
                 <td><SeverityChip severity={r.overallSeverity} /></td>
                 <td>
                   {r.rollbackVerified

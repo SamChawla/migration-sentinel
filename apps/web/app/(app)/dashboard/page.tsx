@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { Client } from "pg";
-import { listRequests, listAuditEvents, getDashboardStats, getSeverityDistribution } from "@sentinel/db/queries";
+import { listRequests, listAuditEvents, listTargetDatabases, getDashboardStats, getSeverityDistribution } from "@sentinel/db/queries";
+import { ENV_ORDER } from "@sentinel/core";
 import { SeverityChip, StatusChip } from "@/components/chips";
+import { EnvBadge } from "@/components/EnvBadge";
 import { StatReadout } from "@/components/instruments/Readouts";
 import { timeAgo } from "@/lib/format";
 
@@ -36,7 +38,7 @@ async function probeHttp(url: string | undefined): Promise<boolean> {
 }
 
 export default async function Dashboard() {
-  const [requests, audit, stats, sevDist, targetUp, shadowUp, sentinelUp, trueforgeUp] = await Promise.all([
+  const [requests, audit, stats, sevDist, connections, targetUp, shadowUp, sentinelUp, trueforgeUp] = await Promise.all([
     // Only the 5 most recent are rendered below — ask for 5, not the default 50.
     // Each record is hydrated with several sequential queries, so fetching 50 to
     // show 5 was ~10x the database work per dashboard load.
@@ -44,6 +46,7 @@ export default async function Dashboard() {
     listAuditEvents(),
     getDashboardStats(),
     getSeverityDistribution(),
+    listTargetDatabases().catch(() => []),
     probeDb(process.env.TARGET_DB_URL),
     probeDb(process.env.SHADOW_ADMIN_URL),
     probeDb(process.env.DATABASE_URL),
@@ -96,6 +99,26 @@ export default async function Dashboard() {
         </div>
       </div>
 
+      {/* Environments strip — the promotion ladder and what's registered on each rung */}
+      <div className="glass" style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 16px", marginBottom: 24, flexWrap: "wrap" }}>
+        <span className="hud-label" style={{ margin: 0 }}>Environments</span>
+        {ENV_ORDER.map((env, i) => {
+          const conns = connections.filter((c) => c.environment === env);
+          return (
+            <span key={env} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              {i > 0 && <span aria-hidden="true" style={{ color: "var(--faint)", fontSize: 11 }}>›</span>}
+              <EnvBadge env={env} />
+              <span className="mono" style={{ fontSize: 11, color: conns.length ? "var(--text-dim)" : "var(--faint)" }}>
+                {conns.length ? `${conns.length} ${conns.length === 1 ? "db" : "dbs"}` : "none"}
+              </span>
+            </span>
+          );
+        })}
+        <span className="mono" style={{ marginLeft: "auto", fontSize: 10, color: "var(--faint)", letterSpacing: ".06em" }}>
+          prod unlocks only after a lower-env apply
+        </span>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
         {/* Recent migrations list */}
         <section>
@@ -110,7 +133,10 @@ export default async function Dashboard() {
                   <Link href={`/requests/${r.id}`} className="lr-title">{r.title}</Link>
                   <div className="mono" style={{ fontSize: 11, color: "var(--faint)" }}>{r.id}</div>
                 </div>
-                <span className="lr-target">{r.targetDb}</span>
+                <span className="lr-target" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  {r.targetDb}
+                  <EnvBadge env={r.environment} />
+                </span>
                 <SeverityChip severity={r.overallSeverity} />
                 <StatusChip status={r.status} />
                 <Link href={`/requests/${r.id}`} className="lr-action">Review</Link>

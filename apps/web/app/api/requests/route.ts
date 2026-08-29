@@ -1,6 +1,7 @@
 import { NextResponse, after } from "next/server";
 import {
   listRequests,
+  listTargetDatabases,
   createRequest,
   getRequest,
   setRequestStatus,
@@ -39,6 +40,24 @@ export async function POST(req: Request) {
   }
   if (upSql.trim() && intent) {
     return NextResponse.json({ error: "Provide SQL or intent, not both." }, { status: 400 });
+  }
+
+  // The alias must resolve to a REGISTERED connection with a stored URL.
+  // createRequest would otherwise auto-create a URL-less target row, and the
+  // pipeline/apply path throws on it much later — fail honestly at intake.
+  const targets = await listTargetDatabases();
+  const target = targets.find((t) => t.alias === targetDb);
+  if (!target) {
+    return NextResponse.json(
+      { error: `Unknown target "${targetDb}" — register the connection in Settings first.` },
+      { status: 400 },
+    );
+  }
+  if (!target.hasUrl) {
+    return NextResponse.json(
+      { error: `Target "${targetDb}" has no stored connection URL — re-add it with a URL in Settings.` },
+      { status: 400 },
+    );
   }
 
   const rec = await createRequest({ title, targetDb, upSql, downSql, intent, requestedBy: session.user });

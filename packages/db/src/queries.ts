@@ -25,7 +25,9 @@ import type {
   Reversibility,
   QodoVerdict,
   ApprovalDecision,
+  DbEnvironment,
 } from "@sentinel/core";
+import { nextEnv } from "@sentinel/core";
 import { encryptUrl, decryptUrl } from "./crypt";
 
 // ── Flat shapes the UI consumes ──────────────────────────────────────────
@@ -41,6 +43,9 @@ export interface RequestRecord {
   id: string;
   title: string;
   targetDb: string;
+  environment: DbEnvironment;
+  promotionGroupId: string;
+  promotedFromRequestId: string | null;
   status: RequestStatus;
   requestedBy: string;
   createdAt: string;
@@ -230,6 +235,9 @@ export async function listRequests(
       id: req.id,
       title: req.title,
       targetDb: target?.connectionAlias ?? target?.name ?? "unknown",
+      environment: (target?.environment as DbEnvironment) ?? "dev",
+      promotionGroupId: req.promotionGroupId,
+      promotedFromRequestId: req.promotedFromRequestId,
       status: req.status as RequestStatus,
       requestedBy: req.requestedBy,
       createdAt: toIso(req.createdAt),
@@ -347,6 +355,9 @@ export async function getRequest(id: string): Promise<RequestRecord | null> {
     id: req.id,
     title: req.title,
     targetDb: target?.connectionAlias ?? target?.name ?? "unknown",
+    environment: (target?.environment as DbEnvironment) ?? "dev",
+    promotionGroupId: req.promotionGroupId,
+    promotedFromRequestId: req.promotedFromRequestId,
     status: req.status as RequestStatus,
     requestedBy: req.requestedBy,
     createdAt: toIso(req.createdAt),
@@ -572,6 +583,7 @@ export interface TargetDbRow {
   id: string;
   name: string;
   alias: string;
+  environment: DbEnvironment;
   /** whether a real connection URL is stored (vs. a seeded alias only) */
   hasUrl: boolean;
 }
@@ -579,7 +591,13 @@ export interface TargetDbRow {
 /** All configured target databases — the selectable connections. */
 export async function listTargetDatabases(): Promise<TargetDbRow[]> {
   const rows = await db.select().from(targetDatabase).orderBy(targetDatabase.connectionAlias);
-  return rows.map((r) => ({ id: r.id, name: r.name, alias: r.connectionAlias, hasUrl: Boolean(r.connectionUrl) }));
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    alias: r.connectionAlias,
+    environment: r.environment as DbEnvironment,
+    hasUrl: Boolean(r.connectionUrl),
+  }));
 }
 
 /** Add a NEW connection. Refuses to reuse an existing alias — overwriting a
@@ -588,7 +606,7 @@ export async function listTargetDatabases(): Promise<TargetDbRow[]> {
  *  { ok:false } on a duplicate alias so the caller can 409. The caller is
  *  responsible for having tested connectivity first. */
 export async function addTargetConnection(
-  input: { alias: string; url: string },
+  input: { alias: string; url: string; environment?: DbEnvironment },
 ): Promise<{ ok: true; row: TargetDbRow } | { ok: false; reason: "duplicate" }> {
   const existing = await db
     .select({ id: targetDatabase.id })
@@ -598,9 +616,49 @@ export async function addTargetConnection(
   if (existing.length > 0) return { ok: false, reason: "duplicate" };
   const [row] = await db
     .insert(targetDatabase)
-    .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: encryptUrl(input.url) })
+    .values({
+      name: input.alias,
+      connectionAlias: input.alias,
+      connectionUrl: encryptUrl(input.url),
+      environment: input.environment ?? "dev",
+    })
     .returning();
-  return { ok: true, row: { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true } };
+  return {
+    ok: true,
+    row: {
+      id: row.id,
+      name: row.name,
+      alias: row.connectionAlias,
+      environment: row.environment as DbEnvironment,
+      hasUrl: true,
+    },
+  };
+}
+
+/** Update the environment tag on an existing connection. Safe to call on
+ *  connections with in-flight requests — the environment only affects NEW
+ *  requests' gating rules (typed-confirm, promotion lock). */
+export async function updateTargetEnvironment(
+  alias: string,
+  environment: DbEnvironment,
+): Promise<{ ok: true; row: TargetDbRow } | { ok: false; reason: "not_found" }> {
+  const rows = await db
+    .update(targetDatabase)
+    .set({ environment })
+    .where(eq(targetDatabase.connectionAlias, alias))
+    .returning();
+  if (rows.length === 0) return { ok: false, reason: "not_found" };
+  const r = rows[0];
+  return {
+    ok: true,
+    row: {
+      id: r.id,
+      name: r.name,
+      alias: r.connectionAlias,
+      environment: r.environment as DbEnvironment,
+      hasUrl: !!r.connectionUrl,
+    },
+  };
 }
 
 export interface IntakeRow {
@@ -770,6 +828,192 @@ export async function claimRequestForPipeline(requestId: string): Promise<boolea
     .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, "received")))
     .returning({ id: migrationRequest.id });
   return rows.length === 1;
+}
+
+// ── Promotion (environment ladder) ───────────────────────────────────────
+
+export interface PromotionGroupRow {
+  requestId: string;
+  environment: DbEnvironment;
+  status: RequestStatus;
+  targetAlias: string;
+  upSql: string | null;
+  createdAt: string;
+}
+
+/** Every request in a promotion group, with its target env and latest upSql —
+ *  feeds both the PromotionRail UI and `promotionEligible`. */
+export async function getPromotionGroup(promotionGroupId: string): Promise<PromotionGroupRow[]> {
+  const rows = await db
+    .select()
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(eq(migrationRequest.promotionGroupId, promotionGroupId))
+    .orderBy(asc(migrationRequest.createdAt), asc(migrationRequest.id));
+  return Promise.all(
+    rows.map(async (row) => {
+      const artifact = await getLatestArtifact(row.migration_request.id);
+      return {
+        requestId: row.migration_request.id,
+        environment: (row.target_database?.environment as DbEnvironment) ?? "dev",
+        status: row.migration_request.status as RequestStatus,
+        targetAlias:
+          row.target_database?.connectionAlias ?? row.target_database?.name ?? "unknown",
+        upSql: artifact?.upSql ?? null,
+        createdAt: toIso(row.migration_request.createdAt),
+      };
+    }),
+  );
+}
+
+/** The environment of a request's target connection (null for unknown request). */
+export async function getRequestEnvironment(requestId: string): Promise<DbEnvironment | null> {
+  const rows = await db
+    .select({ environment: targetDatabase.environment })
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(eq(migrationRequest.id, requestId))
+    .limit(1);
+  if (rows.length === 0) return null;
+  return (rows[0].environment as DbEnvironment) ?? "dev";
+}
+
+export interface ApplyGuardContext {
+  environment: DbEnvironment;
+  upSql: string | null;
+  siblings: { environment: DbEnvironment; status: RequestStatus; upSql: string | null }[];
+}
+
+/** Everything `promotionEligible` needs, from the DB only (no network): the
+ *  request's env + latest upSql, and its promotion-group siblings. */
+export async function getApplyGuardContext(requestId: string): Promise<ApplyGuardContext | null> {
+  const rows = await db
+    .select()
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(eq(migrationRequest.id, requestId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+  const [artifact, group] = await Promise.all([
+    getLatestArtifact(requestId),
+    getPromotionGroup(row.migration_request.promotionGroupId),
+  ]);
+  return {
+    environment: (row.target_database?.environment as DbEnvironment) ?? "dev",
+    upSql: artifact?.upSql ?? null,
+    siblings: group
+      .filter((g) => g.requestId !== requestId)
+      .map((g) => ({ environment: g.environment, status: g.status, upSql: g.upSql })),
+  };
+}
+
+export type PromoteFailure =
+  | "not_found"
+  | "no_artifact"
+  | "at_top"
+  | "no_connection"
+  | "already_promoted";
+
+/**
+ * Clone a request one rung up the environment ladder: same promotion_group_id,
+ * the source's LATEST artifact SQL as the new v1 artifact, targeting a
+ * registered next-env connection (a specific alias, or the first next-env
+ * connection with a stored URL). The clone starts at 'received' with a fresh
+ * pending approval — the full pipeline re-runs against the new target.
+ */
+export async function createPromotedRequest(input: {
+  sourceRequestId: string;
+  requestedBy: string;
+  targetAlias?: string;
+}): Promise<{ ok: true; id: string; environment: DbEnvironment } | { ok: false; reason: PromoteFailure }> {
+  const sourceRows = await db
+    .select()
+    .from(migrationRequest)
+    .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(eq(migrationRequest.id, input.sourceRequestId))
+    .limit(1);
+  const source = sourceRows[0];
+  if (!source) return { ok: false, reason: "not_found" };
+
+  const artifact = await getLatestArtifact(input.sourceRequestId);
+  if (!artifact || !artifact.upSql.trim()) return { ok: false, reason: "no_artifact" };
+
+  const sourceEnv = (source.target_database?.environment as DbEnvironment) ?? "dev";
+  const targetEnv = nextEnv(sourceEnv);
+  if (!targetEnv) return { ok: false, reason: "at_top" };
+
+  // Resolve the next-env connection. A URL-less row is not eligible — the
+  // clone would be un-runnable (same footgun as the intake alias check).
+  const candidates = await db
+    .select()
+    .from(targetDatabase)
+    .where(eq(targetDatabase.environment, targetEnv))
+    .orderBy(targetDatabase.connectionAlias);
+  const target = input.targetAlias
+    ? candidates.find((c) => c.connectionAlias === input.targetAlias && c.connectionUrl)
+    : candidates.find((c) => c.connectionUrl);
+  if (!target) return { ok: false, reason: "no_connection" };
+
+  const newId = await db.transaction(async (tx) => {
+    // Lock the source row to serialize concurrent promotions of the same request.
+    await tx.execute(sql`SELECT id FROM migration_request WHERE id = ${source.migration_request.id} FOR UPDATE`);
+
+    const existing = await tx
+      .select({ id: migrationRequest.id })
+      .from(migrationRequest)
+      .where(
+        and(
+          eq(migrationRequest.promotedFromRequestId, source.migration_request.id),
+          eq(migrationRequest.targetDatabaseId, target.id),
+        ),
+      )
+      .limit(1);
+    if (existing.length > 0) return null;
+
+    const [req] = await tx
+      .insert(migrationRequest)
+      .values({
+        targetDatabaseId: target.id,
+        intakeKind: "raw_sql",
+        intakePayload: { sql: artifact.upSql },
+        title: source.migration_request.title,
+        status: "received",
+        requestedBy: input.requestedBy,
+        promotionGroupId: source.migration_request.promotionGroupId,
+        promotedFromRequestId: source.migration_request.id,
+      })
+      .returning();
+
+    await tx.insert(generatedArtifact).values({
+      migrationRequestId: req.id,
+      version: 1,
+      upSql: artifact.upSql,
+      downSql: artifact.downSql,
+      reversibility: "reversible",
+      model: "promotion",
+    });
+
+    await tx.insert(approval).values({
+      migrationRequestId: req.id,
+      decision: "pending",
+      requiresTypedConfirm: false,
+    });
+
+    await tx.insert(auditEvent).values({
+      migrationRequestId: req.id,
+      actor: input.requestedBy,
+      action: "request.promoted",
+      detail: `Promoted from ${sourceEnv} (${source.target_database?.connectionAlias ?? "?"}) to ${targetEnv} (${target.connectionAlias}).`,
+      tone: "info",
+      payload: { sourceRequestId: input.sourceRequestId, fromEnv: sourceEnv, toEnv: targetEnv },
+    });
+
+    return req.id;
+  });
+
+  if (!newId) return { ok: false, reason: "already_promoted" };
+  return { ok: true, id: newId, environment: targetEnv };
 }
 
 export interface PersistSafetyInput {

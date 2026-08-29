@@ -2,12 +2,19 @@ import { NextResponse } from "next/server";
 import {
   getRequest,
   getTrueforgeSession,
+  getApplyGuardContext,
   recordApproval,
   resetApproval,
   insertAuditEvent,
   setRequestStatus,
 } from "@sentinel/db/queries";
-import { assertApproved, GateError } from "@sentinel/core";
+import {
+  assertApproved,
+  GateError,
+  escalateForEnvironment,
+  promotionEligible,
+  type GateDisposition,
+} from "@sentinel/core";
 import { classifyMigration } from "@sentinel/shadow";
 import { applyMigration, resolveApplyGate } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
@@ -111,13 +118,77 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, status: "rejected" });
   }
 
+  // ── Environment guards (doc 11 §4) — approve path only, before the gate. ──
+  // PROMOTION LOCK: a prod request cannot be APPROVED until a sibling in the
+  // same promotion group was APPLIED on a lower environment with the same
+  // (normalized) SQL. Server-side authority — a curl straight at this endpoint
+  // hits the same refusal as the UI. Rejection of a locked request stays open
+  // (handled above); only approval is locked.
+  if (rec.environment === "prod") {
+    const guardCtx = await getApplyGuardContext(requestId);
+    if (!guardCtx || !promotionEligible(guardCtx)) {
+      try {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor,
+          action: "gate.promotion_locked",
+          detail: `Prod approval refused — no lower-environment applied run of this migration exists yet: "${rec.title}".`,
+          tone: "red",
+        });
+      } catch (auditErr) {
+        console.error(`[approvals] promotion-lock audit write failed for ${requestId}:`, auditErr);
+      }
+      return NextResponse.json(
+        {
+          error:
+            "Promotion locked: apply this migration on a lower environment first. Prod approval unlocks once a lower-env run of the same SQL is applied.",
+          code: "promotion_locked",
+        },
+        { status: 403 },
+      );
+    }
+  }
+
+  // Re-derive the env-scaled typed-confirm requirement instead of trusting the
+  // stored flag alone: prod amber/red demands a typed confirmation even when the
+  // persisted gate was armed softer (legacy row, or a tampered write). Non-prod
+  // resolves to the stored flag — behaviour there is unchanged.
+  const storedDisposition: GateDisposition = blocked
+    ? "blocked"
+    : rec.approval.requiresTypedConfirm
+      ? "typed_confirm"
+      : rec.overallSeverity === "amber"
+        ? "approval"
+        : "auto";
+  const requiresTypedConfirm =
+    rec.approval.requiresTypedConfirm ||
+    escalateForEnvironment(storedDisposition, rec.overallSeverity, rec.environment) ===
+      "typed_confirm";
+
+  // When environment escalation promotes a request to typed_confirm but the
+  // pipeline never set an expectedConfirmValue (older row, or severity was
+  // green when persisted), derive a fallback from the SQL so the user has a
+  // real token to type rather than a permanently stuck gate.
+  let expectedConfirmValue = rec.approval.expectedConfirm ?? null;
+  if (requiresTypedConfirm && !expectedConfirmValue) {
+    const tableM =
+      rec.upSql.match(/\b(?:ALTER|DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bUPDATE\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bDELETE\s+FROM\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bTRUNCATE\s+(?:TABLE\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/i);
+    expectedConfirmValue = tableM
+      ? tableM[1].replace(/"/g, "").split(".").pop() ?? "CONFIRM"
+      : "CONFIRM";
+  }
+
   // Pre-check the gate before recording an approval.
   try {
     assertApproved({
       decision: "approved",
-      requiresTypedConfirm: rec.approval.requiresTypedConfirm,
+      requiresTypedConfirm,
       typedConfirmValue: typedConfirm ?? null,
-      expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+      expectedConfirmValue,
       blocked,
     });
   } catch (e) {
@@ -175,9 +246,9 @@ export async function POST(req: Request) {
       assertGate: () =>
         assertApproved({
           decision: "approved",
-          requiresTypedConfirm: rec.approval.requiresTypedConfirm,
+          requiresTypedConfirm,
           typedConfirmValue: typedConfirm ?? null,
-          expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+          expectedConfirmValue,
           blocked,
         }),
       execute: () => applyMigration(requestId, { typedConfirm: typedConfirm ?? null }),

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { Client } from "pg";
 import dns from "node:dns/promises";
 import net from "node:net";
-import { listTargetDatabases, addTargetConnection } from "@sentinel/db/queries";
+import { listTargetDatabases, addTargetConnection, updateTargetEnvironment } from "@sentinel/db/queries";
+import { ENV_ORDER, type DbEnvironment } from "@sentinel/core";
 import { getSession } from "@/lib/auth";
 
 const PROBE_DEADLINE_MS = 8000;
@@ -124,11 +125,18 @@ export async function POST(req: Request) {
   }
   const alias = typeof body.alias === "string" ? body.alias.trim() : "";
   const url = typeof body.url === "string" ? body.url.trim() : "";
+  const environment = typeof body.environment === "string" ? body.environment.trim() : "dev";
   if (!alias || alias.length > 64 || !/^[\w .:-]+$/.test(alias)) {
     return NextResponse.json({ error: "A short alias (letters, numbers, . : - _) is required." }, { status: 400 });
   }
   if (!/^postgres(ql)?:\/\//i.test(url)) {
     return NextResponse.json({ error: "A postgres:// connection URL is required." }, { status: 400 });
+  }
+  if (!(ENV_ORDER as readonly string[]).includes(environment)) {
+    return NextResponse.json(
+      { error: `environment must be one of: ${ENV_ORDER.join(", ")}.` },
+      { status: 400 },
+    );
   }
 
   let parsed: URL;
@@ -151,9 +159,39 @@ export async function POST(req: Request) {
 
   // Insert-only: refuse to reuse an alias so an "add" never reroutes existing
   // requests that reference that target row.
-  const added = await addTargetConnection({ alias, url });
+  const added = await addTargetConnection({ alias, url, environment: environment as DbEnvironment });
   if (!added.ok) {
     return NextResponse.json({ error: `A connection named "${alias}" already exists — select it from the list.` }, { status: 409 });
   }
   return NextResponse.json({ connection: added.row });
+}
+
+/** Update the environment tag on an existing connection so misclassified
+ *  targets (e.g. a prod alias that wasn't heuristically matched during the
+ *  migration) can be corrected without re-adding. */
+export async function PATCH(req: Request) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+
+  const body = await req.json().catch(() => null);
+  if (body == null || typeof body !== "object") {
+    return NextResponse.json({ error: "Request body must be a JSON object with alias and environment." }, { status: 400 });
+  }
+  const alias = typeof body.alias === "string" ? body.alias.trim() : "";
+  const environment = typeof body.environment === "string" ? body.environment.trim() : "";
+  if (!alias) {
+    return NextResponse.json({ error: "alias is required." }, { status: 400 });
+  }
+  if (!(ENV_ORDER as readonly string[]).includes(environment)) {
+    return NextResponse.json(
+      { error: `environment must be one of: ${ENV_ORDER.join(", ")}.` },
+      { status: 400 },
+    );
+  }
+
+  const result = await updateTargetEnvironment(alias, environment as DbEnvironment);
+  if (!result.ok) {
+    return NextResponse.json({ error: `No connection named "${alias}" found.` }, { status: 404 });
+  }
+  return NextResponse.json({ connection: result.row });
 }

@@ -1,4 +1,6 @@
 import { Client } from "pg";
+import { listTargetDatabases } from "@sentinel/db/queries";
+import { EnvBadge } from "@/components/EnvBadge";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -69,17 +71,18 @@ export default async function Settings() {
   const user = session?.user ?? "approver";
 
   // Read the ACTUAL configured databases + probe them, instead of hard-coding
-  // localhost strings and an unconditional green.
-  const targetUrl = process.env.TARGET_DB_URL;
+  // localhost strings and an unconditional green. Target connections come from
+  // the registry (the same rows the picker offers), not a single env var.
   const shadowUrl = process.env.SHADOW_ADMIN_URL;
   const sentinelUrl = process.env.DATABASE_URL;
   const trueforgeUrl = process.env.TRUEFORGE_BASE_URL ?? "http://localhost:8790";
-  const [targetTone, shadowTone, sentinelTone, trueforgeTone] = await Promise.all([
-    probeDb(targetUrl),
+  const [targets, shadowTone, sentinelTone, trueforgeTone] = await Promise.all([
+    listTargetDatabases().catch(() => []),
     probeDb(shadowUrl),
     probeDb(sentinelUrl),
     probeHttp(trueforgeUrl),
   ]);
+  const targetTone = targets.some((t) => t.hasUrl) ? "green" : undefined;
   // Secrets are shown as *** (set) / "not configured" — never their raw value.
   const qodo = secretState("QODO_API_KEY");
   const github = secretState("GITHUB_TOKEN");
@@ -88,7 +91,7 @@ export default async function Settings() {
   const lockMs = posIntEnv("APPLY_LOCK_TIMEOUT_MS", 3000);
   const stmtMs = posIntEnv("APPLY_STATEMENT_TIMEOUT_MS", 30000);
   const connMs = posIntEnv("APPLY_CONNECT_TIMEOUT_MS", 10000);
-  const applyGuardsTone = targetTone === "red" ? "red" : "green";
+  const applyGuardsTone = targetTone ? "green" : "amber";
   const euronKey = Boolean(process.env.EURON_API_KEY?.trim());
   const euronModel = process.env.EURON_MODEL?.trim() || "gpt-4.1-nano";
   const initials =
@@ -126,7 +129,23 @@ export default async function Settings() {
 
       <div className="glass" style={{ marginBottom: 16 }}>
         <h3 className="section-title">Database connections</h3>
-        <Row label="Target (prod)" value={redact(targetUrl)} tone={targetTone} />
+        {targets.length === 0 && (
+          <Row label="Target databases" value="none registered — add one from the New Migration picker" />
+        )}
+        {targets.map((t) => (
+          <div key={t.id} className="health-row">
+            <span style={{ minWidth: 170, color: "var(--muted)", fontSize: 13, display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span className="mono">{t.alias}</span>
+              <EnvBadge env={t.environment} />
+            </span>
+            <span className="mono" style={{ fontSize: 12 }}>
+              {t.hasUrl ? "connection URL stored" : "no stored URL — re-add with a URL"}
+            </span>
+            <span className={`sev-chip sev-${t.hasUrl ? "green" : "amber"}`} style={{ marginLeft: "auto", fontSize: 11 }}>
+              {t.hasUrl ? "✓ configured" : "▲ no url"}
+            </span>
+          </div>
+        ))}
         <Row label="Shadow (ephemeral)" value={redact(shadowUrl)} tone={shadowTone} />
         <Row label="Sentinel (control plane)" value={redact(sentinelUrl)} tone={sentinelTone} />
       </div>

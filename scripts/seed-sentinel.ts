@@ -87,6 +87,7 @@ async function main() {
     name: "Production Orders DB",
     engine: "postgres",
     connectionAlias: "prod-orders-db",
+    environment: "prod",
     connectionUrl: process.env.TARGET_DB_URL ?? "postgres://postgres:postgres@localhost:5433/prod",
   }).returning();
 
@@ -94,6 +95,7 @@ async function main() {
     name: "Staging Orders DB",
     engine: "postgres",
     connectionAlias: "staging-orders-db",
+    environment: "staging",
     // Give staging its OWN URL — without it, resolution falls back to
     // TARGET_DB_URL (production), so a "staging" migration could hit prod.
     connectionUrl: process.env.STAGING_DB_URL ?? "postgres://postgres:postgres@localhost:5436/staging",
@@ -168,15 +170,91 @@ async function main() {
     createdAt: hoursAgo(1),
   });
 
-  // ── Migration 2: Add last_login_at (GREEN, awaiting_approval) ─────────
-  console.log("→ Seeding migration: Add last_login_at…");
+  // ── Migration 2: Add last_login_at — a full promotion group ───────────
+  // Staging sibling APPLIED first, then the prod run awaiting approval with
+  // the SAME SQL in the SAME promotion group → the prod rail is UNLOCKED
+  // (promotionEligible passes). Migration 1 above has no lower-env sibling,
+  // so its prod rail stays LOCKED — the demo shows both states side by side.
+  console.log("→ Seeding migration: Add last_login_at (staging applied → prod awaiting)…");
+  const promoGroup2 = crypto.randomUUID();
+  const LOGIN_UP = "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;";
+  const LOGIN_DOWN = "ALTER TABLE public.users DROP COLUMN last_login_at;";
+
+  const [req2s] = await tx.insert(migrationRequest).values({
+    targetDatabaseId: stagingTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: LOGIN_UP },
+    title: "Add last_login_at to users",
+    status: "applied",
+    requestedBy: "dev@acme.io",
+    promotionGroupId: promoGroup2,
+    createdAt: hoursAgo(6),
+    updatedAt: hoursAgo(5.5),
+  }).returning();
+
+  const [art2s] = await tx.insert(generatedArtifact).values({
+    migrationRequestId: req2s.id,
+    version: 1,
+    upSql: LOGIN_UP,
+    downSql: LOGIN_DOWN,
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(6),
+  }).returning();
+
+  const [shadow2s] = await tx.insert(shadowRun).values({
+    migrationRequestId: req2s.id,
+    generatedArtifactId: art2s.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(6),
+  }).returning();
+
+  const [blast2s] = await tx.insert(blastReport).values({
+    shadowRunId: shadow2s.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 4,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(6),
+  }).returning();
+
+  await tx.insert(blastFinding).values({
+    blastReportId: blast2s.id,
+    statementIndex: 0,
+    statementSql: "ALTER TABLE users ADD COLUMN last_login_at timestamptz",
+    severity: "green",
+    note: "Metadata-only in Postgres 11+.",
+  });
+
+  await tx.insert(approval).values({
+    migrationRequestId: req2s.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(5.5),
+    createdAt: hoursAgo(6),
+  });
+
+  await tx.insert(applyRun).values({
+    migrationRequestId: req2s.id,
+    status: "succeeded",
+    lockTimeoutMs: 3000,
+    statementTimeoutMs: 30000,
+    rollbackAvailable: true,
+    appliedAt: hoursAgo(5.5),
+    logs: "SET lock_timeout=3000ms statement_timeout=30000ms | BEGIN | COMMIT — migration applied.",
+    createdAt: hoursAgo(5.5),
+  });
+
   const [req2] = await tx.insert(migrationRequest).values({
     targetDatabaseId: prodTarget.id,
     intakeKind: "raw_sql",
-    intakePayload: { sql: "ALTER TABLE public.users ADD COLUMN last_login_at timestamptz;" },
+    intakePayload: { sql: LOGIN_UP },
     title: "Add last_login_at to users",
     status: "awaiting_approval",
     requestedBy: "dev@acme.io",
+    promotionGroupId: promoGroup2,
+    promotedFromRequestId: req2s.id,
     createdAt: hoursAgo(2),
     updatedAt: hoursAgo(2),
   }).returning();
@@ -583,6 +661,8 @@ async function main() {
     { migrationRequestId: req6.id, actor: "agent", action: "shadow.dry_run.started", detail: "Shadow provisioned; running up→down on schema-only clone.", tone: "info" as const, createdAt: hoursAgo(0.4) },
     { migrationRequestId: req1.id, actor: "agent", action: "gate.paused", detail: "RED verdict — irreversible DROP COLUMN. Awaiting human approval (typed confirm required).", tone: "red" as const, createdAt: hoursAgo(1) },
     { migrationRequestId: req2.id, actor: "agent", action: "gate.paused", detail: "GREEN verdict — rollback proven on shadow. Awaiting approval.", tone: "info" as const, createdAt: hoursAgo(2) },
+    { migrationRequestId: req2.id, actor: "dev@acme.io", action: "request.promoted", detail: "Promoted from staging (staging-orders-db) to prod (prod-orders-db) — staging run applied, prod rail unlocked.", tone: "info" as const, createdAt: hoursAgo(2) },
+    { migrationRequestId: req2s.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Applied on staging — metadata-only column add.", tone: "green" as const, createdAt: hoursAgo(5.5) },
     { migrationRequestId: req3.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Applied with lock_timeout=2s in 480 ms. Audit row written.", tone: "green" as const, createdAt: hoursAgo(25.5) },
     { migrationRequestId: req3.id, actor: "sam.chawla26@gmail.com", action: "approval.approved", detail: "Approved — non-blocking CONCURRENTLY build.", tone: "green" as const, createdAt: hoursAgo(26) },
     { migrationRequestId: req4.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Backfill (33,121 rows) + SET NOT NULL applied; pre-flight re-probe showed 0 violations.", tone: "green" as const, createdAt: hoursAgo(48) },

@@ -17,11 +17,13 @@
  * decision drives {@link applyMigration}.
  */
 import { Client } from "pg";
+import { escalateForEnvironment } from "@sentinel/core";
 import {
   getRequest,
   getRequestIntake,
   getLatestArtifact,
   getRequestTargetUrl,
+  getRequestEnvironment,
   upsertGeneratedArtifact,
   setRequestStatus,
   claimRequestForPipeline,
@@ -191,7 +193,17 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
     }
 
     // 3 ── persist everything the Approval Console renders + arm the gate.
+    // The gate is armed from the ENVIRONMENT-SCALED disposition (doc 11 §4):
+    // escalateForEnvironment never weakens the base policy, so a prod amber/red
+    // is persisted as typed_confirm even though the base disposition was softer.
+    const environment = (await getRequestEnvironment(requestId)) ?? "dev";
+    const disposition = escalateForEnvironment(
+      report.disposition,
+      report.classification.overallSeverity,
+      environment,
+    );
     const mapped = mapReport(requestId, report);
+    mapped.requiresTypedConfirm = disposition === "typed_confirm";
     const preflightTables = mapped.preflight.map((p) => p.table);
     const expectedConfirmValue = mapped.requiresTypedConfirm
       ? primaryTable(artifact.upSql, preflightTables)
@@ -222,7 +234,8 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
         `severity=${report.classification.overallSeverity}`,
         `rollback_verified=${report.rollback.rollbackVerified}`,
         `qodo=${report.qodo.verdict}`,
-        `disposition=${report.disposition}`,
+        `disposition=${disposition}`,
+        `env=${environment}`,
       ].join(" | "),
     });
 
