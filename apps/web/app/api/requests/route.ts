@@ -3,11 +3,12 @@ import {
   listRequests,
   listTargetDatabases,
   createRequest,
+  createGithubLink,
   getRequest,
   setRequestStatus,
   insertAuditEvent,
 } from "@sentinel/db/queries";
-import { runAgentPipeline } from "@sentinel/agent";
+import { runAgentPipeline, createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -30,15 +31,17 @@ export async function POST(req: Request) {
   const upSql = typeof body.upSql === "string" ? body.upSql : "";
   const downSql = typeof body.downSql === "string" ? body.downSql : "";
   const intent = typeof body.intent === "string" ? body.intent.trim() : "";
-  if (!title || !targetDb) {
+  const isPrIntake = body.intakeKind === "github_pr";
+  if (!targetDb || (!title && !isPrIntake)) {
     return NextResponse.json({ error: "title and targetDb are required." }, { status: 400 });
   }
-  // EXACTLY one of raw SQL or a natural-language intent — NL is generated into
-  // a {up,down} pair by the agent and is never executed verbatim as SQL.
-  if (!upSql.trim() && !intent) {
+  // EXACTLY one of the three intakes. NL is generated into a {up,down} pair by
+  // the agent and never executed verbatim; PR-sourced SQL is read SERVER-SIDE
+  // at the PR's head SHA below — client-supplied SQL is ignored on that path.
+  if (!isPrIntake && !upSql.trim() && !intent) {
     return NextResponse.json({ error: "Provide either SQL (upSql) or a natural-language intent." }, { status: 400 });
   }
-  if (upSql.trim() && intent) {
+  if (!isPrIntake && upSql.trim() && intent) {
     return NextResponse.json({ error: "Provide SQL or intent, not both." }, { status: 400 });
   }
 
@@ -60,7 +63,106 @@ export async function POST(req: Request) {
     );
   }
 
-  const rec = await createRequest({ title, targetDb, upSql, downSql, intent, requestedBy: session.user });
+  // ── GitHub-PR intake (PR3): the server reads the migration file at the
+  // PR's head SHA — never trusting SQL the client sends alongside. ──
+  let prMeta: {
+    repo: string; prNumber: number; filePath: string; headSha: string;
+    prTitle: string; prState: string; htmlUrl: string;
+  } | null = null;
+  let effectiveTitle = title;
+  let effectiveUpSql = upSql;
+  if (isPrIntake) {
+    const token = process.env.GITHUB_TOKEN?.trim();
+    if (!token) {
+      return NextResponse.json(
+        { error: "GITHUB_TOKEN is not configured — the PR intake is unavailable.", code: "github_token_missing" },
+        { status: 409 },
+      );
+    }
+    const repo = typeof body.repo === "string" ? body.repo.trim() : "";
+    const prNumber = Number(body.prNumber);
+    const filePath = typeof body.filePath === "string" ? body.filePath.trim() : "";
+    if (!repo || !Number.isInteger(prNumber) || prNumber <= 0 || !filePath) {
+      return NextResponse.json({ error: "repo, prNumber and filePath are required for a PR intake." }, { status: 400 });
+    }
+    if (!filePath.toLowerCase().endsWith(".sql")) {
+      return NextResponse.json({ error: "The PR intake only accepts .sql files." }, { status: 400 });
+    }
+    try {
+      const gh = createGithubClient({ token });
+      const pr = await gh.getPr(repo, prNumber);
+      // The file must actually be part of the PR's change set — an arbitrary
+      // repo path is not a PR intake.
+      const files = await gh.getPrFiles(repo, prNumber);
+      if (!files.some((f) => f.filename === filePath && f.status !== "removed")) {
+        return NextResponse.json(
+          { error: `"${filePath}" is not a changed file on ${repo}#${prNumber}.` },
+          { status: 400 },
+        );
+      }
+      effectiveUpSql = await gh.getFileContents(repo, filePath, pr.headSha);
+      if (!effectiveUpSql.trim()) {
+        return NextResponse.json({ error: `"${filePath}" is empty at the PR head.` }, { status: 400 });
+      }
+      effectiveTitle = title || `${pr.title} — ${filePath.split("/").pop()}`;
+      prMeta = {
+        repo, prNumber, filePath,
+        headSha: pr.headSha, prTitle: pr.title, prState: pr.state, htmlUrl: pr.htmlUrl,
+      };
+    } catch (e) {
+      if (e instanceof GithubApiError) {
+        return NextResponse.json({ error: e.message, code: "github_error" }, { status: e.status === 404 ? 404 : 502 });
+      }
+      throw e;
+    }
+  }
+
+  const rec = await createRequest({
+    title: effectiveTitle,
+    targetDb,
+    upSql: effectiveUpSql,
+    downSql: prMeta ? "" : downSql,
+    intent,
+    pr: prMeta
+      ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }
+      : undefined,
+    requestedBy: session.user,
+  });
+
+  if (prMeta) {
+    try {
+      await createGithubLink({
+        migrationRequestId: rec.id,
+        repo: prMeta.repo,
+        prNumber: prMeta.prNumber,
+        commitSha: prMeta.headSha,
+        filePath: prMeta.filePath,
+        prTitle: prMeta.prTitle,
+        prState: prMeta.prState,
+        headSha: prMeta.headSha,
+        htmlUrl: prMeta.htmlUrl,
+      });
+      await insertAuditEvent({
+        migrationRequestId: rec.id,
+        actor: session.user,
+        action: "github.linked",
+        detail: `Linked to ${prMeta.repo}#${prMeta.prNumber} (${prMeta.filePath} @ ${prMeta.headSha.slice(0, 8)}).`,
+        tone: "info",
+      });
+    } catch (e) {
+      // The request exists but its link write failed — land it failed with an
+      // audit rather than leaving a PR intake silently unlinked.
+      await setRequestStatus(rec.id, "failed").catch(() => {});
+      await insertAuditEvent({
+        migrationRequestId: rec.id,
+        actor: "sentinel.agent",
+        action: "github.link_failed",
+        detail: `Could not record the GitHub link: ${(e as Error).message}`,
+        tone: "red",
+      }).catch(() => {});
+      return NextResponse.json({ error: "Could not record the GitHub link." }, { status: 500 });
+    }
+  }
 
   // Run the safety pipeline as tracked post-response work (Next `after`), not a
   // detached floating promise that can be dropped — it advances the request

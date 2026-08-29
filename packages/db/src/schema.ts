@@ -237,6 +237,37 @@ export const applyRun = pgTable(
   }),
 );
 
+// ── github_link (PR3 — the request's tie to its source-of-truth PR) ────────
+export const githubLink = pgTable(
+  "github_link",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    migrationRequestId: uuid("migration_request_id")
+      .notNull()
+      .references(() => migrationRequest.id, { onDelete: "cascade" }),
+    /** owner/repo — validated (^[\w.-]+/[\w.-]+$) before it is ever written. */
+    repo: text("repo").notNull(),
+    prNumber: integer("pr_number").notNull(),
+    /** Head SHA the migration SQL was read at — the server re-reads the file
+     *  at this exact commit; client-supplied SQL is never trusted on this path. */
+    commitSha: text("commit_sha").notNull(),
+    filePath: text("file_path").notNull(),
+    // Cached PR metadata for the console chips (refreshed on demand).
+    prTitle: text("pr_title"),
+    prState: text("pr_state"),
+    headSha: text("head_sha"),
+    checksState: text("checks_state"),
+    htmlUrl: text("html_url"),
+    lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
+    /** The Sentinel verdict comment's id — updates are idempotent via PATCH. */
+    commentId: bigint("comment_id", { mode: "number" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestUq: uniqueIndex("github_link_request_uq").on(t.migrationRequestId),
+  }),
+);
+
 // ── audit_event (append-only) ──────────────────────────────────────────────
 export const auditEvent = pgTable(
   "audit_event",

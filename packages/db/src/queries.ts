@@ -18,6 +18,7 @@ import {
   approval,
   applyRun,
   auditEvent,
+  githubLink,
 } from "./schema";
 import type {
   RequestStatus,
@@ -399,6 +400,9 @@ export interface CreateRequestInput {
   /** Natural-language intent — when set (and upSql is empty) the request is an
    *  nl_intent with NO artifact, so the agent generates the {up,down} pair. */
   intent?: string;
+  /** GitHub-PR intake — when set the request is a github_pr whose upSql the
+   *  SERVER read from the PR at this head SHA (never client-supplied). */
+  pr?: { url: string; repo: string; file: string; prNumber: number; headSha: string };
   requestedBy?: string;
 }
 
@@ -428,20 +432,25 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
     }
 
     const isIntent = !input.upSql.trim() && Boolean(input.intent?.trim());
+    const isPr = Boolean(input.pr);
     const [req] = await tx
       .insert(migrationRequest)
       .values({
         targetDatabaseId: targetId,
-        intakeKind: isIntent ? "nl_intent" : "raw_sql",
-        intakePayload: isIntent ? { intent: input.intent } : { sql: input.upSql },
+        intakeKind: isPr ? "github_pr" : isIntent ? "nl_intent" : "raw_sql",
+        intakePayload: isPr
+          ? { sql: input.upSql, pr: input.pr }
+          : isIntent
+            ? { intent: input.intent }
+            : { sql: input.upSql },
         title: input.title,
         status: "received",
         requestedBy: input.requestedBy ?? "unknown",
       })
       .returning();
 
-    // Raw SQL → persist it as the v1 artifact immediately. An nl_intent gets NO
-    // artifact here, so runAgentPipeline's generation stage produces {up,down}.
+    // Raw SQL / PR-sourced SQL → persist it as the v1 artifact immediately. An
+    // nl_intent gets NO artifact here, so runAgentPipeline generates {up,down}.
     if (!isIntent && input.upSql) {
       await tx.insert(generatedArtifact).values({
         migrationRequestId: req.id,
@@ -449,7 +458,7 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
         upSql: input.upSql,
         downSql: input.downSql,
         reversibility: "reversible",
-        model: "user-supplied",
+        model: isPr ? "github-pr" : "user-supplied",
       });
     }
 
@@ -1201,6 +1210,106 @@ export async function finishApplyRun(
       rolledBackAt: input.rolledBackAt ?? null,
     })
     .where(eq(applyRun.id, id));
+}
+
+// ── GitHub link (PR3) ────────────────────────────────────────────────────
+
+export interface GithubLinkRow {
+  id: string;
+  migrationRequestId: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  filePath: string;
+  prTitle: string | null;
+  prState: string | null;
+  headSha: string | null;
+  checksState: string | null;
+  htmlUrl: string | null;
+  lastSyncedAt: string | null;
+  commentId: number | null;
+}
+
+function toGithubLinkRow(r: typeof githubLink.$inferSelect): GithubLinkRow {
+  return {
+    id: r.id,
+    migrationRequestId: r.migrationRequestId,
+    repo: r.repo,
+    prNumber: r.prNumber,
+    commitSha: r.commitSha,
+    filePath: r.filePath,
+    prTitle: r.prTitle,
+    prState: r.prState,
+    headSha: r.headSha,
+    checksState: r.checksState,
+    htmlUrl: r.htmlUrl,
+    lastSyncedAt: r.lastSyncedAt ? r.lastSyncedAt.toISOString() : null,
+    commentId: r.commentId,
+  };
+}
+
+export async function createGithubLink(input: {
+  migrationRequestId: string;
+  repo: string;
+  prNumber: number;
+  commitSha: string;
+  filePath: string;
+  prTitle?: string | null;
+  prState?: string | null;
+  headSha?: string | null;
+  checksState?: string | null;
+  htmlUrl?: string | null;
+}): Promise<GithubLinkRow> {
+  const [row] = await db
+    .insert(githubLink)
+    .values({
+      migrationRequestId: input.migrationRequestId,
+      repo: input.repo,
+      prNumber: input.prNumber,
+      commitSha: input.commitSha,
+      filePath: input.filePath,
+      prTitle: input.prTitle ?? null,
+      prState: input.prState ?? null,
+      headSha: input.headSha ?? null,
+      checksState: input.checksState ?? null,
+      htmlUrl: input.htmlUrl ?? null,
+      lastSyncedAt: new Date(),
+    })
+    .returning();
+  return toGithubLinkRow(row);
+}
+
+export async function getGithubLink(requestId: string): Promise<GithubLinkRow | null> {
+  const rows = await db
+    .select()
+    .from(githubLink)
+    .where(eq(githubLink.migrationRequestId, requestId))
+    .limit(1);
+  return rows[0] ? toGithubLinkRow(rows[0]) : null;
+}
+
+/** Refresh the cached PR metadata after a live GitHub read. */
+export async function updateGithubLinkSync(
+  requestId: string,
+  sync: {
+    prTitle?: string | null;
+    prState?: string | null;
+    headSha?: string | null;
+    checksState?: string | null;
+    htmlUrl?: string | null;
+  },
+): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({ ...sync, lastSyncedAt: new Date() })
+    .where(eq(githubLink.migrationRequestId, requestId));
+}
+
+export async function setGithubLinkCommentId(requestId: string, commentId: number): Promise<void> {
+  await db
+    .update(githubLink)
+    .set({ commentId })
+    .where(eq(githubLink.migrationRequestId, requestId));
 }
 
 // ── Audit ────────────────────────────────────────────────────────────────

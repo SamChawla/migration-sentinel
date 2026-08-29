@@ -36,6 +36,13 @@
       "when": 1787996283508,
       "tag": "0004_magenta_wolfsbane",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787997525565,
+      "tag": "0005_plain_the_spike",
+      "breakpoints": true
     }
   ]
 }

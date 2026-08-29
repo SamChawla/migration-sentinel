@@ -25,5 +25,13 @@ export type ApprovalDecision = "pending" | "approved" | "rejected";
 export interface IntakePayload {
   sql?: string;
   intent?: string;
-  pr?: { url: string; repo: string; file: string };
+  pr?: {
+    url: string;
+    repo: string;
+    file: string;
+    /** PR number + the head SHA the file was read at (server-side re-read —
+     *  client-supplied SQL is never trusted on the PR path). */
+    prNumber?: number;
+    headSha?: string;
+  };
 }
