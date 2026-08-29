@@ -633,6 +633,20 @@ export async function addTargetConnection(
   };
 }
 
+/** Resolve a registered connection's stored URL by alias. Distinguishes an
+ *  unknown alias (undefined) from a registered-but-URL-less row (null) so the
+ *  schema API can answer 404 vs 409 honestly. The URL itself must never be
+ *  serialized into any response. */
+export async function getTargetUrlByAlias(alias: string): Promise<string | null | undefined> {
+  const rows = await db
+    .select({ url: targetDatabase.connectionUrl })
+    .from(targetDatabase)
+    .where(eq(targetDatabase.connectionAlias, alias))
+    .limit(1);
+  if (rows.length === 0) return undefined;
+  return rows[0].url ?? null;
+}
+
 export interface IntakeRow {
   intakeKind: "nl_intent" | "raw_sql" | "github_pr";
   payload: Record<string, unknown>;

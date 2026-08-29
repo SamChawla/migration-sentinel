@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getRequest, getPromotionGroup, getApplyGuardContext } from "@sentinel/db/queries";
-import { classifyMigration } from "@sentinel/shadow";
+import { getRequest, getRequestTargetUrl, getPromotionGroup, getApplyGuardContext } from "@sentinel/db/queries";
+import { classifyMigration, introspectConnection, type SchemaIntrospection } from "@sentinel/shadow";
 import {
   gateDisposition,
   dispositionLabel,
@@ -61,43 +61,22 @@ interface SceneCol {
   opLabel?: string;
 }
 
-// Real demo-target schema (fixtures/target_schema.sql). The 3D reflects the
-// actual table the migration touches, so decided (applied/rejected/blocked)
-// requests still render their table instead of an empty stack.
-const DEMO_TABLES: Record<string, { name: string; type: string; pk?: boolean }[]> = {
-  users: [
-    { name: "id", type: "bigserial", pk: true },
-    { name: "email", type: "text" },
-    { name: "full_name", type: "text" },
-    { name: "is_active", type: "boolean" },
-    { name: "legacy_notes", type: "text" },
-    { name: "created_at", type: "timestamptz" },
-  ],
-  orders: [
-    { name: "id", type: "bigserial", pk: true },
-    { name: "user_id", type: "bigint" },
-    { name: "amount_cents", type: "integer" },
-    { name: "status", type: "text" },
-    { name: "created_at", type: "timestamptz" },
-  ],
-};
-
-/** Derive the table + columns + operation highlight the 3D should show from the
- *  migration SQL. Uses the REAL parsed table name; borrows fixture columns only
- *  for tables we have a fixture for, otherwise shows only the columns the
- *  migration touches (rather than fabricating an unrelated schema). */
-// Sentinel for "the migration's table could not be identified". It must NOT be a
-// real fixture table, so it never matches SCHEMA_FKS and never fabricates a FK.
+// Sentinel for "the migration's table could not be identified". Never a real
+// table name, so it can't match a live table and inherit its FKs.
 const UNPARSED_TABLE = "public.?";
 
-// Own-property lookup: the SQL is user text, so identifiers like "constructor"
-// or "toString" must not resolve to Object.prototype members and crash the
-// scene build when we try to .map() them.
-function fixtureColumns(table: string): { name: string; type: string; pk?: boolean }[] | undefined {
-  return Object.prototype.hasOwnProperty.call(DEMO_TABLES, table) ? DEMO_TABLES[table] : undefined;
+interface SqlModel {
+  table: string;
+  /** Columns the SQL provably touches (with their op metadata). */
+  columns: SceneCol[];
+  /** Set for whole-table / whole-rows operations — tints EVERY live column. */
+  tableOp?: { affected: Affected; severity: Sev; opLabel: string };
 }
 
-function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
+/** Derive the table + touched columns + operation highlight from the migration
+ *  SQL alone. No fixtures: the live schema (introspection) supplies the real
+ *  columns; this model is the OVERLAY saying what the SQL does to them. */
+function db3dModel(upSql: string): SqlModel {
   const sql = upSql.toLowerCase();
 
   const tableMatch =
@@ -106,137 +85,144 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
     sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
     sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
   const parsed = tableMatch?.[1];
-  const fixture = parsed ? fixtureColumns(parsed) : undefined;
-
-  // Use the REAL parsed table name. When nothing parsed, fall back to an explicit
-  // UNPARSED sentinel — NOT public.users — so an unrecognized statement can't
-  // inherit the users fixture and fabricate the orders→users FK. Only borrow the
-  // fixture COLUMNS for a table we actually have a fixture for; otherwise start
-  // EMPTY (the op-specific logic below still highlights the columns it touches).
   const table = parsed ? `public.${parsed}` : UNPARSED_TABLE;
-  let columns: SceneCol[] = fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
-  const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
-    columns.map((c) => ({ ...c, affected, severity, opLabel }));
 
   // Whole-table destruction → the entire stack is affected.
-  if (/\bdrop\s+table\b/.test(sql)) return { table, columns: tint("table", "red", "DROP TABLE") };
-  if (/\btruncate\b/.test(sql)) return { table, columns: tint("table", "red", "TRUNCATE") };
+  if (/\bdrop\s+table\b/.test(sql))
+    return { table, columns: [], tableOp: { affected: "table", severity: "red", opLabel: "DROP TABLE" } };
+  if (/\btruncate\b/.test(sql))
+    return { table, columns: [], tableOp: { affected: "table", severity: "red", opLabel: "TRUNCATE" } };
   if (/^\s*delete\s+from\b/.test(sql)) {
     return /\bwhere\b/.test(sql)
-      ? { table, columns: tint("row", "amber", "DELETE ROWS") }
-      : { table, columns: tint("table", "red", "DELETE ALL ROWS") };
+      ? { table, columns: [], tableOp: { affected: "row", severity: "amber", opLabel: "DELETE ROWS" } }
+      : { table, columns: [], tableOp: { affected: "table", severity: "red", opLabel: "DELETE ALL ROWS" } };
   }
 
-  // UPDATE → highlight the SET columns (or the whole table if unbounded/unparsed).
+  // UPDATE → highlight the SET columns (or all rows if none parsed).
   if (/^\s*update\b/.test(sql)) {
     const unbounded = !/\bwhere\b/.test(sql);
     const sev: Sev = unbounded ? "red" : "amber";
     const opLabel = unbounded ? "UPDATE · all rows" : "UPDATE";
     const setPart = sql.match(/\bset\b([\s\S]+?)(?:\bwhere\b|;|$)/)?.[1] ?? "";
-    const setCols = new Set([...setPart.matchAll(/(\w+)\s*=/g)].map((m) => m[1]));
-    const marked = columns.map((c) =>
-      setCols.has(c.name) ? { ...c, affected: "alter" as Affected, severity: sev, opLabel } : c,
-    );
-    return {
-      table,
-      columns: marked.some((c) => c.affected !== "none") ? marked : tint("row", sev, opLabel),
-    };
+    const setCols = [...setPart.matchAll(/(\w+)\s*=/g)].map((m) => m[1]);
+    if (setCols.length > 0) {
+      return {
+        table,
+        columns: setCols.map((name) => ({ name, type: "—", affected: "alter" as Affected, severity: sev, opLabel })),
+      };
+    }
+    return { table, columns: [], tableOp: { affected: "row", severity: sev, opLabel } };
   }
 
   // DROP COLUMN
   let m = sql.match(/drop\s+column\s+(?:if\s+exists\s+)?(\w+)/);
   if (m) {
-    const name = m[1];
-    if (columns.some((c) => c.name === name)) {
-      columns = columns.map((c) =>
-        c.name === name ? { ...c, affected: "drop", severity: "red", opLabel: "DROP COLUMN" } : c,
-      );
-    } else {
-      columns.push({ name, type: "—", affected: "drop", severity: "red", opLabel: "DROP COLUMN" });
-    }
-    return { table, columns };
+    return { table, columns: [{ name: m[1], type: "—", affected: "drop", severity: "red", opLabel: "DROP COLUMN" }] };
   }
 
   // ADD COLUMN
   m = sql.match(/add\s+column\s+(?:if\s+not\s+exists\s+)?(\w+)\s+([a-z0-9_(), ]+?)(?:\s+not\s+null|\s+default|,|;|$)/);
   if (m) {
     const notNull = /\bnot\s+null\b/.test(sql);
-    columns.push({
-      name: m[1],
-      type: (m[2] || "").trim() || "—",
-      affected: "add",
-      severity: notNull ? "amber" : "green",
-      opLabel: "ADD COLUMN",
-    });
-    return { table, columns };
+    return {
+      table,
+      columns: [{
+        name: m[1],
+        type: (m[2] || "").trim() || "—",
+        affected: "add",
+        severity: notNull ? "amber" : "green",
+        opLabel: "ADD COLUMN",
+      }],
+    };
   }
 
   // ALTER COLUMN (type change / SET NOT NULL / DROP NOT NULL)
   m = sql.match(/alter\s+column\s+(\w+)/);
   if (m) {
-    const name = m[1];
     const sev: Sev = /\bdrop\s+not\s+null\b/.test(sql) ? "green" : "amber";
-    if (columns.some((c) => c.name === name)) {
-      columns = columns.map((c) =>
-        c.name === name ? { ...c, affected: "alter", severity: sev, opLabel: "ALTER COLUMN" } : c,
-      );
-    } else {
-      columns.push({ name, type: "—", affected: "alter", severity: sev, opLabel: "ALTER COLUMN" });
-    }
-    return { table, columns };
+    return { table, columns: [{ name: m[1], type: "—", affected: "alter", severity: sev, opLabel: "ALTER COLUMN" }] };
   }
 
   // CREATE INDEX → highlight the indexed column.
   if (/\bcreate\s+index\b/.test(sql)) {
     const name = sql.match(/create\s+index[^;]*\(\s*(\w+)/)?.[1];
     const online = /\bconcurrently\b/.test(sql);
-    if (name && columns.some((c) => c.name === name)) {
-      columns = columns.map((c) =>
-        c.name === name
-          ? { ...c, affected: "alter", severity: online ? "green" : "amber", opLabel: online ? "INDEX · online" : "CREATE INDEX" }
-          : c,
-      );
+    if (name) {
+      return {
+        table,
+        columns: [{
+          name, type: "—", affected: "alter",
+          severity: online ? "green" : "amber",
+          opLabel: online ? "INDEX · online" : "CREATE INDEX",
+        }],
+      };
     }
-    return { table, columns };
+    return { table, columns: [] };
   }
 
-  return { table, columns };
+  return { table, columns: [] };
 }
 
-// Foreign-key edges of the demo schema (fixtures/target_schema.sql). Drives the
-// "affected table + FK neighbours" view.
-const SCHEMA_FKS: FkEdge[] = [
-  { fromTable: "public.orders", fromCol: "user_id", toTable: "public.users", toCol: "id" },
-];
+/** How many FK-neighbour tables the ERD shows next to the affected one. */
+const MAX_NEIGHBOURS = 3;
 
-/** Expand the single-table model into the affected table PLUS its FK-neighbour
- *  tables + the edges between them, so the 3D shows how the change is linked. */
-function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
-  const primary = db3dModel(upSql);
-  const primaryName = primary.table; // a real "public.<table>", or UNPARSED_TABLE
-  // Only a confidently identified table drives FK-neighbour expansion — an
-  // unparsed statement must not inherit a fixture's relationships.
-  const parsedTarget = primaryName !== UNPARSED_TABLE;
-  // If the parse couldn't attribute columns but the table IS a known fixture,
-  // still show its columns (so the card isn't empty and FK links can anchor).
-  let primaryCols = primary.columns;
-  if (primaryCols.length === 0) {
-    const fix = fixtureColumns(primaryName.replace(/^public\./, ""));
-    if (fix) primaryCols = fix.map((c) => ({ ...c, affected: "none" as Affected }));
+/** Build the ERD scene from the LIVE introspected schema with the SQL model
+ *  overlaid by column name: real tables/columns/FKs, with the touched columns
+ *  tinted by the operation. Returns null when the primary table can't be
+ *  anchored in the live schema (caller falls back to the SQL-only card). */
+function liveScene(
+  model: SqlModel,
+  live: SchemaIntrospection,
+): { tables: SceneTable[]; edges: FkEdge[] } | null {
+  if (model.table === UNPARSED_TABLE) return null;
+  const bare = model.table.replace(/^public\./, "");
+  const primary = live.tables.find((t) => t.name === model.table || t.name.endsWith(`.${bare}`));
+  if (!primary) return null;
+
+  const overlay = new Map(model.columns.map((c) => [c.name, c]));
+  let primaryCols: SceneCol[] = primary.columns.map((c) => {
+    const touched = overlay.get(c.name);
+    return {
+      name: c.name,
+      type: c.type,
+      pk: c.pk,
+      affected: touched?.affected ?? model.tableOp?.affected ?? "none",
+      severity: touched?.severity ?? model.tableOp?.severity,
+      opLabel: touched?.opLabel ?? model.tableOp?.opLabel,
+    };
+  });
+  // Columns the SQL touches that don't exist live yet (ADD COLUMN) — append.
+  for (const c of model.columns) {
+    if (!primaryCols.some((p) => p.name === c.name)) primaryCols = [...primaryCols, c];
   }
-  const tables: SceneTable[] = [{ name: primaryName, columns: primaryCols, role: "primary" }];
 
-  const edges = parsedTarget
-    ? SCHEMA_FKS.filter((e) => e.fromTable === primaryName || e.toTable === primaryName)
-    : [];
-  const neighbours = new Set<string>();
-  for (const e of edges) neighbours.add(e.fromTable === primaryName ? e.toTable : e.fromTable);
-
-  for (const name of neighbours) {
-    const cols = fixtureColumns(name.replace(/^public\./, ""));
-    if (cols) tables.push({ name, columns: cols.map((c) => ({ ...c, affected: "none" as Affected })), role: "related" });
+  const edges = live.fks.filter((e) => e.fromTable === primary.name || e.toTable === primary.name);
+  const neighbourNames: string[] = [];
+  for (const e of edges) {
+    const other = e.fromTable === primary.name ? e.toTable : e.fromTable;
+    if (other !== primary.name && !neighbourNames.includes(other)) neighbourNames.push(other);
   }
-  return { tables, edges };
+  const keptNeighbours = neighbourNames.slice(0, MAX_NEIGHBOURS);
+  const kept = new Set([primary.name, ...keptNeighbours]);
+
+  const tables: SceneTable[] = [
+    { name: primary.name, columns: primaryCols, role: "primary" },
+    ...keptNeighbours.map((name) => {
+      const t = live.tables.find((lt) => lt.name === name)!;
+      return {
+        name,
+        columns: t.columns.map((c) => ({ name: c.name, type: c.type, pk: c.pk, affected: "none" as Affected })),
+        role: "related" as const,
+      };
+    }),
+  ];
+  return { tables, edges: edges.filter((e) => kept.has(e.fromTable) && kept.has(e.toTable)) };
+}
+
+/** SQL-only fallback card — shown with an honest caption when the live schema
+ *  is unavailable. Shows ONLY what the SQL touches; nothing is fabricated. */
+function fallbackScene(model: SqlModel): { tables: SceneTable[]; edges: FkEdge[] } {
+  return { tables: [{ name: model.table, columns: model.columns, role: "primary" }], edges: [] };
 }
 
 export default async function ApprovalConsole({ params }: { params: Promise<{ id: string }> }) {
@@ -275,7 +261,23 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   const blocked = disposition === "blocked";
   const decidable = r.status === "awaiting_approval" || r.status === "blocked";
   const paused = decidable;
-  const scene = db3dScene(r.upSql);
+
+  // Real ERD: introspect the request's target live and overlay what the SQL
+  // touches. Any failure (no URL, unreachable, timeout, table not found) falls
+  // back to the SQL-only card with an honest caption — nothing is fabricated.
+  const model = db3dModel(r.upSql);
+  let live: SchemaIntrospection | null = null;
+  try {
+    const targetUrl = await getRequestTargetUrl(r.id);
+    if (targetUrl) live = await introspectConnection(targetUrl, { deadlineMs: 8000 });
+  } catch {
+    live = null;
+  }
+  const sceneFromLive = live ? liveScene(model, live) : null;
+  const scene = sceneFromLive ?? fallbackScene(model);
+  const erdCaption = sceneFromLive
+    ? undefined
+    : "Live schema unavailable — showing only what the SQL touches";
 
   // Whether the safety pipeline has actually produced a verdict yet. getRequest()
   // substitutes overallSeverity='green' when no blast report exists, so a freshly
@@ -362,7 +364,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           {/* 3D Database */}
           <div className="glass glass-energized" style={{ padding: 0 }}>
-            <SchemaErd tables={scene.tables} edges={scene.edges} />
+            <SchemaErd tables={scene.tables} edges={scene.edges} caption={erdCaption} />
           </div>
 
           {/* SQL wells */}
