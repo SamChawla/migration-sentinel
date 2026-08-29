@@ -1,9 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getRequest } from "@sentinel/db/queries";
+import { getRequest, getPromotionGroup, getApplyGuardContext } from "@sentinel/db/queries";
 import { classifyMigration } from "@sentinel/shadow";
-import { gateDisposition, dispositionLabel } from "@sentinel/core";
+import {
+  gateDisposition,
+  dispositionLabel,
+  escalateForEnvironment,
+  promotionEligible,
+} from "@sentinel/core";
 import { SeverityChip, StatusChip } from "@/components/chips";
+import { EnvBadge } from "@/components/EnvBadge";
+import { PromotionRail } from "@/components/console/PromotionRail";
 import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readouts";
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
@@ -238,17 +245,33 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   if (!r) notFound();
 
   // Deterministic gate policy (ADR-004) — derived from the SQL of record, not
-  // from a stored flag, so the UI and the enforced gate always agree.
+  // from a stored flag, so the UI and the enforced gate always agree. Scaled to
+  // the target's environment exactly like the server arms it (doc 11 §4).
   const cls = classifyMigration(r.upSql);
   const dataWillFail = r.preflight.some((p) => p.willFail === true);
   const dataUnknown = r.preflight.some((p) => p.willFail === null);
-  const disposition = gateDisposition({
-    severity: r.overallSeverity,
-    hasBlockingStatement: cls.hasBlockingStatement,
-    dataWillFail,
-    dataUnknown,
-    rollbackVerified: r.rollbackVerified,
-  });
+  const disposition = escalateForEnvironment(
+    gateDisposition({
+      severity: r.overallSeverity,
+      hasBlockingStatement: cls.hasBlockingStatement,
+      dataWillFail,
+      dataUnknown,
+      rollbackVerified: r.rollbackVerified,
+    }),
+    r.overallSeverity,
+    r.environment,
+  );
+
+  // Promotion rail state: the group's per-env runs + the prod lock verdict,
+  // computed with the SAME promotionEligible the server enforces.
+  const [promotionGroup, guardCtx] = await Promise.all([
+    getPromotionGroup(r.promotionGroupId),
+    getApplyGuardContext(r.id),
+  ]);
+  const prodLocked =
+    r.environment === "prod" &&
+    (r.status === "awaiting_approval" || r.status === "blocked") &&
+    (!guardCtx || !promotionEligible(guardCtx));
   const blocked = disposition === "blocked";
   const decidable = r.status === "awaiting_approval" || r.status === "blocked";
   const paused = decidable;
@@ -268,7 +291,13 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
       <Link href="/requests" style={{ fontSize: 12, color: "var(--muted)" }}>← All migrations</Link>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "8px 0 10px" }}>
         <h1 style={{ margin: 0 }}>{r.title}</h1>
-        <StatusChip status={r.status} />
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <span className="mono" style={{ fontSize: 12, color: "var(--muted)", display: "inline-flex", alignItems: "center", gap: 7 }}>
+            {r.targetDb}
+            <EnvBadge env={r.environment} />
+          </span>
+          <StatusChip status={r.status} />
+        </span>
       </div>
 
       {/* Engine attribution — TrueForge runs the agent; this console is the cockpit. */}
@@ -311,6 +340,20 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
           GATE POLICY · {dispositionLabel(disposition)}
         </div>
       )}
+
+      {/* Promotion rail — where this migration sits on the env ladder */}
+      <PromotionRail
+        requestId={r.id}
+        environment={r.environment}
+        status={r.status}
+        prodLocked={prodLocked}
+        runs={promotionGroup.map((g) => ({
+          requestId: g.requestId,
+          environment: g.environment,
+          status: g.status,
+          targetAlias: g.targetAlias,
+        }))}
+      />
 
       {/* Main grid: 3D + readouts */}
       <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 22 }}>
