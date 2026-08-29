@@ -1,20 +1,68 @@
 import { NextResponse } from "next/server";
 import { Client } from "pg";
 import dns from "node:dns/promises";
+import net from "node:net";
 import { listTargetDatabases, addTargetConnection, updateTargetEnvironment } from "@sentinel/db/queries";
 import { ENV_ORDER, type DbEnvironment } from "@sentinel/core";
 import { getSession } from "@/lib/auth";
 
 const PROBE_DEADLINE_MS = 8000;
 
-/** Block SSRF: reject URLs whose hostname resolves to private/internal IPs. */
-async function isPrivateHost(hostname: string): Promise<boolean> {
+/** Resolve hostname once and return the IP if it's public, or null if private/unresolvable.
+ *  Prevents DNS rebinding: the caller connects to the returned IP, not the hostname. */
+async function resolvePublicHost(hostname: string): Promise<string | null> {
+  if (net.isIP(hostname)) {
+    return isPrivateIp(hostname) ? null : hostname;
+  }
   try {
     const { address } = await dns.lookup(hostname);
-    return /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.|::1|fc|fd|fe80)/.test(address);
+    return isPrivateIp(address) ? null : address;
   } catch {
-    return true;
+    return null;
   }
+}
+
+function isPrivateIp(addr: string): boolean {
+  if (net.isIPv4(addr)) {
+    return /^(127\.|10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|0\.|169\.254\.)/.test(addr);
+  }
+  const norm = normalizeIpv6(addr);
+  if (norm.startsWith("::ffff:")) {
+    const mapped = norm.slice(7);
+    if (net.isIPv4(mapped)) return isPrivateIp(mapped);
+  }
+  return /^(::1$|fc|fd|fe[89ab])/.test(norm) || norm === "::";
+}
+
+function normalizeIpv6(addr: string): string {
+  const buf = Buffer.alloc(16);
+  const parts = addr.split(":");
+  let writeIndex = 0;
+  let gapIndex = -1;
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i] === "") { gapIndex = i; break; }
+    const v = parseInt(parts[i], 16);
+    buf.writeUInt16BE(v, writeIndex);
+    writeIndex += 2;
+  }
+  if (gapIndex >= 0) {
+    let tail = 15;
+    for (let i = parts.length - 1; i > gapIndex; i--) {
+      if (parts[i] === "") continue;
+      if (parts[i].includes(".")) {
+        const octets = parts[i].split(".").map(Number);
+        buf[tail--] = octets[3];
+        buf[tail--] = octets[2];
+        buf[tail--] = octets[1];
+        buf[tail--] = octets[0];
+      } else {
+        const v = parseInt(parts[i], 16);
+        buf.writeUInt16BE(v, tail - 1);
+        tail -= 2;
+      }
+    }
+  }
+  return Array.from({ length: 8 }, (_, i) => buf.readUInt16BE(i * 2).toString(16)).join(":").replace(/\b0(:0)+\b/, "::").toLowerCase();
 }
 
 /** Reachability probe bounded end-to-end: pg query/statement timeouts AND a
@@ -95,11 +143,16 @@ export async function POST(req: Request) {
   try { parsed = new URL(url); } catch {
     return NextResponse.json({ error: "Malformed connection URL." }, { status: 400 });
   }
-  if (await isPrivateHost(parsed.hostname)) {
+  const resolvedIp = await resolvePublicHost(parsed.hostname);
+  if (!resolvedIp) {
     return NextResponse.json({ error: "Connections to private/internal network addresses are not allowed." }, { status: 422 });
   }
 
-  const probe = await probeConnection(url, req.signal);
+  // Connect to the resolved IP so a DNS rebind between validation and
+  // connect cannot redirect the probe to a different (private) host.
+  const probeUrl = new URL(url);
+  probeUrl.hostname = net.isIPv6(resolvedIp) ? `[${resolvedIp}]` : resolvedIp;
+  const probe = await probeConnection(probeUrl.toString(), req.signal);
   if (!probe.ok) {
     return NextResponse.json({ error: `Could not connect: ${probe.error}` }, { status: 400 });
   }

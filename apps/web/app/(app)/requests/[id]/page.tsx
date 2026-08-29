@@ -97,6 +97,34 @@ function fixtureColumns(table: string): { name: string; type: string; pk?: boole
   return Object.prototype.hasOwnProperty.call(DEMO_TABLES, table) ? DEMO_TABLES[table] : undefined;
 }
 
+/** Split CREATE TABLE column definitions on commas, but respect parenthesized
+ *  sub-expressions like numeric(10,2) so they don't become two fragments. */
+function splitDefs(block: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let depth = 0;
+  for (const ch of block) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (ch === "," && depth === 0) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+/** Extract a column type from the remaining definition text, handling multi-word
+ *  types (double precision, character varying) and parenthesized params (numeric(10,2)). */
+function parseColumnType(rest: string): string {
+  const r = rest.trim();
+  const m = r.match(/^(\w+(?:\s*\([^)]*\))?(?:\s+(?:precision|varying|without|with|time|zone)\w*)*)/i);
+  return m ? m[1].trim() : r.split(/\s/)[0] || "—";
+}
+
 function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   const sql = upSql.toLowerCase();
 
@@ -110,28 +138,38 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
     sql.match(new RegExp(String.raw`create\s+index[^;]*\bon\s+${T}`));
   const schema = tableMatch?.[1] ?? "public";
   const parsed = tableMatch?.[2];
-  const fixture = parsed ? fixtureColumns(parsed) : undefined;
+  // Only use fixture columns when the schema is "public" — an identically named
+  // table in another schema (e.g. audit.users) must not inherit public.users cols.
+  const fixture = parsed && schema === "public" ? fixtureColumns(parsed) : undefined;
 
   const table = parsed ? `${schema}.${parsed}` : UNPARSED_TABLE;
-  let columns: SceneCol[] = fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
+  const isCreate = /\bcreate\s+table\b/.test(sql);
+  // For CREATE TABLE, parse the column definitions from the SQL body rather than
+  // preloading fixtures (which would duplicate cols for known tables like users).
+  let columns: SceneCol[] = !isCreate && fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
   const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
     columns.map((c) => ({ ...c, affected, severity, opLabel }));
 
-  // CREATE TABLE → parse column definitions from the body.
-  if (/\bcreate\s+table\b/.test(sql)) {
+  if (isCreate) {
     const colBlock = sql.match(/\(([\s\S]+)\)/)?.[1] ?? "";
-    const defs = colBlock.split(",").map((s) => s.trim()).filter(Boolean);
+    const defs = splitDefs(colBlock);
     const skip = new Set(["constraint", "primary", "unique", "foreign", "check", "exclude"]);
+    const pkCols = new Set<string>();
     for (const def of defs) {
-      const cm = def.match(/^"?(\w+)"?\s+(\w[\w\s()]*)/);
+      // Table-level PRIMARY KEY (col1, col2) → mark those cols as PK after parsing all defs.
+      const pkm = def.match(/^\s*primary\s+key\s*\(([^)]+)\)/);
+      if (pkm) { pkm[1].split(",").forEach((c) => pkCols.add(c.trim().replace(/^"|"$/g, ""))); continue; }
+
+      const cm = def.match(/^"?(\w+)"?\s+(.+)/);
       if (cm && !skip.has(cm[1])) {
         columns.push({
-          name: cm[1], type: (cm[2] || "").trim().split(/\s/)[0],
+          name: cm[1], type: parseColumnType(cm[2]),
           pk: /\bprimary\s+key\b/.test(def) || undefined,
           affected: "add", severity: "green", opLabel: "CREATE TABLE",
         });
       }
     }
+    for (const c of columns) { if (pkCols.has(c.name)) c.pk = true; }
     return { table, columns };
   }
 

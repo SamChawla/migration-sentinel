@@ -26,18 +26,22 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Track load + error state separately from the array so a failed fetch is not
   // silently shown as an empty configuration ("No matches").
   const loadConns = useCallback(() => {
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
     setLoadError(null);
-    fetch("/api/connections")
+    fetch("/api/connections", { signal: ac.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Server returned ${r.status}`);
         return r.json();
       })
-      .then((d) => { setConns(d.connections ?? []); setLoaded(true); })
-      .catch((e) => { setLoadError(e instanceof Error ? e.message : "Could not load connections."); setLoaded(true); });
+      .then((d) => { if (!ac.signal.aborted) { setConns(d.connections ?? []); setLoaded(true); } })
+      .catch((e) => { if (!ac.signal.aborted) { setLoadError(e instanceof Error ? e.message : "Could not load connections."); setLoaded(true); } });
   }, []);
 
   useEffect(() => { loadConns(); }, [loadConns]);
