@@ -154,10 +154,10 @@ export default function Landing() {
         </div>
         <p className="blocked-caption">
           847,291 non-null values. Irreversible. The agent generated this migration,
-          proved it can&apos;t be rolled back, and <strong>stopped itself</strong> —
-          it applies only after you type the exact confirmation. And unbounded
-          destruction (a bare DELETE, a DROP TABLE) it <strong>refuses outright</strong>,
-          approval or not.
+          proved it can&apos;t be rolled back, and <strong>escalated</strong> —
+          it requires you to type the exact confirmation before it will apply.
+          Unbounded destruction (a bare DELETE, a DROP TABLE) goes further:
+          the gate <strong>refuses outright</strong>, approval or not.
         </p>
       </div>
 

@@ -79,19 +79,23 @@ export async function streamUntilPauseOrDone(
   return { status, pending };
 }
 
-/** Resume a paused turn by allowing/denying the gated tool call. */
+/** Resume a paused turn by allowing/denying the gated tool call.
+ *  The stream is consumed to completion so stream-time errors surface
+ *  and the turn actually closes — returning the raw stream would leave
+ *  the TrueForge turn dangling. */
 export async function resolveApproval(
   client: TrueForgeLike,
   sessionId: string,
   pending: PendingApproval[],
   allow: boolean,
   reason?: string,
-) {
+): Promise<void> {
   const input = pending.map((p) => ({
     type: "user.tool_approval",
     threadId: p.threadId,
     toolCallId: p.toolCallId,
     approval: allow ? { status: "allow" } : { status: "deny", reason: reason ?? "Rejected at gate" },
   }));
-  return client.sessions.createTurnStream(sessionId, { input: input as any });
+  const stream = await client.sessions.createTurnStream(sessionId, { input: input as any });
+  for await (const _ of stream.withMetadata()) { /* drain */ }
 }

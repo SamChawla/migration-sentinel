@@ -26,6 +26,7 @@ import type {
   QodoVerdict,
   ApprovalDecision,
 } from "@sentinel/core";
+import { encryptUrl, decryptUrl } from "./crypt";
 
 // ── Flat shapes the UI consumes ──────────────────────────────────────────
 
@@ -563,7 +564,8 @@ export async function getRequestTargetUrl(requestId: string): Promise<string | n
   // TARGET_DB_URL could run a migration/probe against the default (production)
   // database rather than the alias the user selected.
   if (rows.length === 0) return null;
-  return rows[0].url ?? null;
+  const raw = rows[0].url;
+  return raw ? decryptUrl(raw) : null;
 }
 
 export interface TargetDbRow {
@@ -596,7 +598,7 @@ export async function addTargetConnection(
   if (existing.length > 0) return { ok: false, reason: "duplicate" };
   const [row] = await db
     .insert(targetDatabase)
-    .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: input.url })
+    .values({ name: input.alias, connectionAlias: input.alias, connectionUrl: encryptUrl(input.url) })
     .returning();
   return { ok: true, row: { id: row.id, name: row.name, alias: row.connectionAlias, hasUrl: true } };
 }
