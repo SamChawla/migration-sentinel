@@ -55,22 +55,88 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  // LIVE merge verification — never trust the cached state for the release.
-  let merged: boolean;
+  const gh = createGithubClient({ token });
+
+  // ── LIVE merge verification — never trust the cached state for the release.
+  let exportPr: Awaited<ReturnType<typeof gh.getPr>>;
   try {
-    const gh = createGithubClient({ token });
-    merged = await gh.isMerged(link.repo, link.exportPrNumber);
+    exportPr = await gh.getPr(link.repo, link.exportPrNumber);
   } catch (e) {
     const msg = e instanceof GithubApiError ? e.message : (e as Error).message;
     return NextResponse.json({ error: `Could not verify the merge: ${msg}` }, { status: 502 });
   }
-  if (!merged) {
+  if (!exportPr.merged) {
     return NextResponse.json(
       { error: `Export PR #${link.exportPrNumber} is not merged yet — merge it on GitHub to release the apply.`, code: "not_merged" },
       { status: 409 },
     );
   }
+
+  // ── Issue 2: distinct approver — the person who merged the PR on GitHub
+  // must not be the same user releasing the apply on Sentinel.
+  if (exportPr.mergedBy && exportPr.mergedBy === session.user) {
+    return NextResponse.json(
+      { error: "The person who merged the export PR on GitHub cannot also release the apply — a distinct approver is required for gate 2." },
+      { status: 403 },
+    );
+  }
+
+  // ── Issue 1: verify merged SQL matches the analyzed artifact.
+  try {
+    const prFiles = await gh.getPrFiles(link.repo, link.exportPrNumber);
+    const upFile = prFiles.find((f) => f.filename.endsWith("/up.sql"));
+    if (upFile) {
+      const mergedSql = await gh.getFileContents(link.repo, upFile.filename, exportPr.headSha);
+      if (mergedSql.trim() !== rec.upSql.trim()) {
+        return NextResponse.json(
+          { error: "The merged up.sql does not match the analyzed migration SQL — the PR was modified after export. Re-analyze before applying." },
+          { status: 409 },
+        );
+      }
+    }
+  } catch (e) {
+    if (e instanceof GithubApiError && e.status === 404) {
+      return NextResponse.json(
+        { error: "Could not read the merged up.sql — the export folder may have been modified or removed." },
+        { status: 409 },
+      );
+    }
+    const msg = e instanceof GithubApiError ? e.message : (e as Error).message;
+    return NextResponse.json({ error: `Could not verify merged SQL: ${msg}` }, { status: 502 });
+  }
+
   await markExportMerged(id);
+
+  // ── Issue 3: validate typed confirmation BEFORE transitioning state — a
+  // mistyped confirmation must not leave the request stranded in 'approved'.
+  const blocked = classifyMigration(rec.upSql).hasBlockingStatement;
+  const storedDisposition: GateDisposition = blocked
+    ? "blocked"
+    : rec.approval.requiresTypedConfirm
+      ? "typed_confirm"
+      : rec.overallSeverity === "amber"
+        ? "approval"
+        : "auto";
+  const requiresTypedConfirm =
+    rec.approval.requiresTypedConfirm ||
+    escalateForEnvironment(storedDisposition, rec.overallSeverity, rec.environment) === "typed_confirm";
+
+  if (requiresTypedConfirm || blocked) {
+    try {
+      assertApproved({
+        decision: rec.approval.decision,
+        requiresTypedConfirm,
+        typedConfirmValue: typedConfirm,
+        expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+        blocked,
+      });
+    } catch (e) {
+      if (e instanceof GateError) {
+        return NextResponse.json({ error: e.message }, { status: 403 });
+      }
+      throw e;
+    }
+  }
 
   // Guarded awaiting_merge → approved; the one-shot claim inside applyMigration
   // then takes approved → applying exactly as on the direct path.
@@ -87,28 +153,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       migrationRequestId: id,
       actor: session.user,
       action: "export.merge_verified",
-      detail: `Export PR ${link.repo}#${link.exportPrNumber} verified MERGED live — apply released.`,
+      detail: `Export PR ${link.repo}#${link.exportPrNumber} verified MERGED live (by ${exportPr.mergedBy ?? "unknown"}) — apply released.`,
       tone: "green",
     });
   } catch (auditErr) {
     console.error(`[apply] merge audit write failed for ${id}:`, auditErr);
   }
-
-  // Same gate discipline as the approvals route: the env-scaled typed-confirm
-  // requirement is re-derived (never trusted from the stored flag alone), the
-  // deterministic gate rules before the TrueForge pause is resolved, and every
-  // applyMigration guard still runs.
-  const blocked = classifyMigration(rec.upSql).hasBlockingStatement;
-  const storedDisposition: GateDisposition = blocked
-    ? "blocked"
-    : rec.approval.requiresTypedConfirm
-      ? "typed_confirm"
-      : rec.overallSeverity === "amber"
-        ? "approval"
-        : "auto";
-  const requiresTypedConfirm =
-    rec.approval.requiresTypedConfirm ||
-    escalateForEnvironment(storedDisposition, rec.overallSeverity, rec.environment) === "typed_confirm";
 
   try {
     const gateSession = await getTrueforgeSession(id);
@@ -139,8 +189,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     return NextResponse.json({ ok: true, status: "applied" });
   } catch (e) {
-    // A throw means the apply never claimed — the request is back at
-    // 'approved' and would strand there; land it failed with the reason.
     try {
       const cur = await getRequest(id);
       if (cur?.status === "approved") {
@@ -154,7 +202,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         });
       }
     } catch {
-      /* best-effort unstrand — don't mask the original error */
+      /* best-effort unstrand */
     }
     if (e instanceof GateError) {
       return NextResponse.json({ error: e.message }, { status: 403 });

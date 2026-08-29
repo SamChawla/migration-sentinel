@@ -54,6 +54,7 @@ export interface PrInfo {
   headSha: string;
   htmlUrl: string;
   merged: boolean;
+  mergedBy: string | null;
 }
 
 export interface GithubClientOptions {
@@ -87,6 +88,8 @@ export interface GithubClient {
     repo: string,
     input: { title: string; head: string; base: string; body?: string },
   ): Promise<{ number: number; htmlUrl: string }>;
+  /** Update an existing ref to point at a new sha. */
+  updateRef(repo: string, ref: string, sha: string, force?: boolean): Promise<void>;
   /** Live merge check — GET /pulls/{n}/merge (204 merged / 404 not). */
   isMerged(repo: string, number: number): Promise<boolean>;
 }
@@ -152,6 +155,7 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         headSha: String(pr.head?.sha ?? ""),
         htmlUrl: String(pr.html_url ?? ""),
         merged: Boolean(pr.merged),
+        mergedBy: typeof pr.merged_by?.login === "string" ? pr.merged_by.login : null,
       };
     },
 
@@ -260,6 +264,11 @@ export function createGithubClient(opts: GithubClientOptions): GithubClient {
         { title: input.title, head: input.head, base: input.base, body: input.body ?? "" },
       );
       return { number: Number(pr.number), htmlUrl: String(pr.html_url) };
+    },
+
+    async updateRef(repo, ref, sha, force = false) {
+      const encRef = ref.split("/").map(encodeURIComponent).join("/");
+      await call("PATCH", `/repos/${encodeRepo(repo)}/git/refs/${encRef}`, { sha, force });
     },
 
     async isMerged(repo, number) {

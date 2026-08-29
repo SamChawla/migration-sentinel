@@ -58,9 +58,10 @@ export async function exportMigrationPr(
   try {
     await gh.createRef(opts.repo, `refs/heads/${branch}`, baseSha);
   } catch (e) {
-    // 422 = the branch already exists (a previous export attempt) — reuse it
-    // rather than failing; the timestamped folder keeps file paths fresh.
     if (!(e instanceof GithubApiError && e.status === 422)) throw e;
+    // Branch already exists — reset it to baseSha so a stale or
+    // adversarial branch can't inject arbitrary content.
+    await gh.updateRef(opts.repo, `heads/${branch}`, baseSha, true);
   }
 
   const folder = migrationFolder(opts.now ?? new Date(), opts.title);
