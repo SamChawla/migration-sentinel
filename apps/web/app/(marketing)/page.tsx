@@ -122,7 +122,7 @@ export default function Landing() {
           <div className="hero-card">
             <div className="hero-card-header">
               <span>Migration #25</span>
-              <span className="status-blocked">Blocked</span>
+              <span className="status-risk">High risk</span>
             </div>
             <div className="hero-card-body">
               <div className="hero-card-row">
@@ -154,7 +154,10 @@ export default function Landing() {
         </div>
         <p className="blocked-caption">
           847,291 non-null values. Irreversible. The agent generated this migration,
-          proved it can&apos;t be rolled back, and <strong>stopped itself</strong>. Your call.
+          proved it can&apos;t be rolled back, and <strong>stopped itself</strong> —
+          it applies only after you type the exact confirmation. And unbounded
+          destruction (a bare DELETE, a DROP TABLE) it <strong>refuses outright</strong>,
+          approval or not.
         </p>
       </div>
 
@@ -325,7 +328,7 @@ export default function Landing() {
 
       {/* ── DEMO CTA ── */}
       <section className="demo" id="demo">
-        <h2>See the gate refuse a <span className="drop">DROP COLUMN</span></h2>
+        <h2>See the gate catch a <span className="drop">DROP COLUMN</span></h2>
         <p>Two migrations are waiting in the console — one safe, one irreversible. Decide for yourself.</p>
         <Link href="/demo" className="demo-cta">
           Watch the replay demo
