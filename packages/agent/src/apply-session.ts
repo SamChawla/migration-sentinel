@@ -38,21 +38,23 @@ export interface ApplyGateSession {
   toolCallId: string;
 }
 
-async function withDeadline<T>(work: Promise<T>, what: string): Promise<T> {
+async function withDeadline<T>(work: (signal: AbortSignal) => Promise<T>, what: string): Promise<T> {
+  const ac = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const p = work(ac.signal);
   try {
     return await Promise.race([
-      work,
+      p,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${what} exceeded ${TRUEFORGE_DEADLINE_MS}ms`)),
-          TRUEFORGE_DEADLINE_MS,
-        );
+        timer = setTimeout(() => {
+          ac.abort();
+          reject(new Error(`${what} exceeded ${TRUEFORGE_DEADLINE_MS}ms`));
+        }, TRUEFORGE_DEADLINE_MS);
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
-    work.catch(() => {}); // abandoned loser must not surface an unhandled rejection
+    p.catch(() => {});
   }
 }
 
@@ -79,7 +81,7 @@ export async function openApplyGateSession(
   const client = opts.client ?? createClient();
   try {
     const { data: session } = await withDeadline(
-      client.sessions.create({
+      () => client.sessions.create({
         agent: {
           spec: {
             model: { name: MODEL },
@@ -103,7 +105,7 @@ export async function openApplyGateSession(
     );
 
     const { pending } = await withDeadline(
-      streamUntilPauseOrDone(client, session.id, [
+      () => streamUntilPauseOrDone(client, session.id, [
         {
           type: "user.message",
           content:
@@ -176,7 +178,7 @@ export async function resolveApplyGate<T>(
     const client = opts.client ?? createClient();
     try {
       await withDeadline(
-        resolveApproval(
+        () => resolveApproval(
           client,
           opts.session.sessionId,
           [{ threadId: opts.session.threadId, toolCallId: opts.session.toolCallId }],

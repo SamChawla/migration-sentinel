@@ -79,13 +79,40 @@ interface SqlModel {
 function db3dModel(upSql: string): SqlModel {
   const sql = upSql.toLowerCase();
 
+  // Table identifier: optional "schema"."table" with double-quote + any schema support
+  const T = String.raw`(?:"?(\w+)"?\.)?"?(\w+)"?`;
   const tableMatch =
-    sql.match(/(?:drop|alter|truncate)\s+table\s+(?:only\s+)?(?:public\.)?(\w+)/) ||
-    sql.match(/create\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?(\w+)/) ||
-    sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
-    sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
-  const parsed = tableMatch?.[1];
-  const table = parsed ? `public.${parsed}` : UNPARSED_TABLE;
+    sql.match(new RegExp(String.raw`(?:drop|alter)\s+table\s+(?:only\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`\btruncate\s+(?:table\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`create\s+table\s+(?:if\s+not\s+exists\s+)?${T}`)) ||
+    sql.match(new RegExp(String.raw`(?:update|delete\s+from|insert\s+into)\s+${T}`)) ||
+    sql.match(new RegExp(String.raw`create\s+index[^;]*\bon\s+${T}`));
+  const schema = tableMatch?.[1] ?? "public";
+  const parsed = tableMatch?.[2];
+  const fixture = parsed ? fixtureColumns(parsed) : undefined;
+
+  const table = parsed ? `${schema}.${parsed}` : UNPARSED_TABLE;
+  let columns: SceneCol[] = fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
+  const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
+    columns.map((c) => ({ ...c, affected, severity, opLabel }));
+
+  // CREATE TABLE → parse column definitions from the body.
+  if (/\bcreate\s+table\b/.test(sql)) {
+    const colBlock = sql.match(/\(([\s\S]+)\)/)?.[1] ?? "";
+    const defs = colBlock.split(",").map((s) => s.trim()).filter(Boolean);
+    const skip = new Set(["constraint", "primary", "unique", "foreign", "check", "exclude"]);
+    for (const def of defs) {
+      const cm = def.match(/^"?(\w+)"?\s+(\w[\w\s()]*)/);
+      if (cm && !skip.has(cm[1])) {
+        columns.push({
+          name: cm[1], type: (cm[2] || "").trim().split(/\s/)[0],
+          pk: /\bprimary\s+key\b/.test(def) || undefined,
+          affected: "add", severity: "green", opLabel: "CREATE TABLE",
+        });
+      }
+    }
+    return { table, columns };
+  }
 
   // Whole-table destruction → the entire stack is affected.
   if (/\bdrop\s+table\b/.test(sql))

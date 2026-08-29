@@ -165,13 +165,30 @@ export async function POST(req: Request) {
     escalateForEnvironment(storedDisposition, rec.overallSeverity, rec.environment) ===
       "typed_confirm";
 
+  // When environment escalation promotes a request to typed_confirm but the
+  // pipeline never set an expectedConfirmValue (older row, or severity was
+  // green when persisted), derive a fallback from the SQL so the user has a
+  // real token to type rather than a permanently stuck gate.
+  let expectedConfirmValue = rec.approval.expectedConfirm ?? null;
+  if (requiresTypedConfirm && !expectedConfirmValue) {
+    const tableM =
+      rec.upSql.match(/\b(?:ALTER|DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bUPDATE\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bDELETE\s+FROM\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bTRUNCATE\s+(?:TABLE\s+)?([\w."]+)/i) ??
+      rec.upSql.match(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/i);
+    expectedConfirmValue = tableM
+      ? tableM[1].replace(/"/g, "").split(".").pop() ?? "CONFIRM"
+      : "CONFIRM";
+  }
+
   // Pre-check the gate before recording an approval.
   try {
     assertApproved({
       decision: "approved",
       requiresTypedConfirm,
       typedConfirmValue: typedConfirm ?? null,
-      expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+      expectedConfirmValue,
       blocked,
     });
   } catch (e) {
@@ -233,7 +250,7 @@ export async function POST(req: Request) {
           // the allow leg holds the same bar as the pre-check.
           requiresTypedConfirm,
           typedConfirmValue: typedConfirm ?? null,
-          expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+          expectedConfirmValue,
           blocked,
         }),
       execute: () => applyMigration(requestId, { typedConfirm: typedConfirm ?? null }),

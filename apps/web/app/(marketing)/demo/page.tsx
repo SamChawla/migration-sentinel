@@ -63,9 +63,14 @@ export default function DemoReplay() {
   const progress = ((i + (trace.length ? lineN / trace.length : 1)) / DEMO_STEPS.length) * 100;
 
   const goto = (n: number) => { setPlaying(false); setI(Math.max(0, Math.min(n, DEMO_STEPS.length - 1))); setLineN(0); };
+  // The current phase's trace has fully streamed. The "applied" success chip
+  // must wait for this — phase entry resets lineN to 0, and COMMIT + audit are
+  // the LAST lines of the Apply trace, so claiming success earlier would report
+  // a production change before the replayed apply reached it.
+  const traceDone = lineN >= trace.length;
   // "Complete" only when the LAST phase has finished streaming — not merely
   // because the index is last (Apply still streams while atEnd is true).
-  const complete = atEnd && !playing && lineN >= trace.length;
+  const complete = atEnd && !playing && traceDone;
   // The badge reports the recorded agent's state, not the replay transport:
   // during the Gate phase the agent is paused awaiting the operator even while
   // the replay keeps streaming, so "running" would contradict AGENT PAUSED.
@@ -171,9 +176,11 @@ export default function DemoReplay() {
             </div>
           )}
 
-          {step.status === "applied" && (
+          {step.status === "applied" && (traceDone ? (
             <div className="sev-chip sev-green" style={{ marginTop: 8 }}>Applied with guards &middot; audit written</div>
-          )}
+          ) : (
+            <div className="sev-chip sev-amber" style={{ marginTop: 8 }}>Applying &middot; timeouts, transaction, auto-rollback armed</div>
+          ))}
         </section>
 
         {/* Streaming agent trace */}

@@ -71,7 +71,7 @@ export function normalizeSqlForPromotion(sql: string): string {
     if (two === "--") {
       const nl = sql.indexOf("\n", i);
       i = nl === -1 ? sql.length : nl;
-      out += " ";
+      if (out.length > 0 && out[out.length - 1] !== " ") out += " ";
     } else if (two === "/*") {
       let depth = 1;
       i += 2;
@@ -80,7 +80,7 @@ export function normalizeSqlForPromotion(sql: string): string {
         else if (sql.slice(i, i + 2) === "*/") (depth -= 1), (i += 2);
         else i += 1;
       }
-      out += " ";
+      if (out.length > 0 && out[out.length - 1] !== " ") out += " ";
     } else if (sql[i] === "'" || sql[i] === '"') {
       const quote = sql[i];
       let j = i + 1;
@@ -93,7 +93,7 @@ export function normalizeSqlForPromotion(sql: string): string {
       out += sql.slice(i, Math.min(j + 1, sql.length));
       i = j + 1;
     } else if (sql[i] === "$") {
-      const m = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+      const m = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
       if (m) {
         const end = sql.indexOf(m[0], i + m[0].length);
         const stop = end === -1 ? sql.length : end + m[0].length;
@@ -103,12 +103,15 @@ export function normalizeSqlForPromotion(sql: string): string {
         out += sql[i];
         i += 1;
       }
+    } else if (/\s/.test(sql[i])) {
+      if (out.length > 0 && out[out.length - 1] !== " ") out += " ";
+      i += 1;
     } else {
       out += sql[i];
       i += 1;
     }
   }
-  return out.replace(/\s+/g, " ").trim();
+  return out.trim();
 }
 
 export interface PromotionSibling {
