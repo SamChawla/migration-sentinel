@@ -17,6 +17,7 @@ function makeGh(overrides: Partial<Record<string, unknown>> = {}) {
     getRepo: vi.fn(async () => ({ default_branch: "main" })),
     getRef: vi.fn(async () => ({ sha: "basesha123" })),
     createRef: vi.fn(async () => ({})),
+    updateRef: vi.fn(async () => ({})),
     putFile: vi.fn(async () => ({})),
     createPull: vi.fn(async () => ({ number: 55, htmlUrl: "https://github.com/o/r/pull/55" })),
     ...overrides,
