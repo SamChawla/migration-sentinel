@@ -175,13 +175,14 @@ export async function resolveApplyGate<T>(
 
   let trueforgeUsed = false;
   if (opts.session) {
+    const sess = opts.session;
     const client = opts.client ?? createClient();
     try {
       await withDeadline(
         () => resolveApproval(
           client,
-          opts.session.sessionId,
-          [{ threadId: opts.session.threadId, toolCallId: opts.session.toolCallId }],
+          sess.sessionId,
+          [{ threadId: sess.threadId, toolCallId: sess.toolCallId }],
           approved,
           opts.reason,
         ),
