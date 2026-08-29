@@ -4,7 +4,7 @@ const ALG = "aes-256-gcm";
 
 function getKey(): Buffer {
   const hex = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  if (!hex || hex.length !== 64) {
+  if (!hex || !/^[0-9a-fA-F]{64}$/.test(hex)) {
     throw new Error(
       "CREDENTIAL_ENCRYPTION_KEY must be a 64-char hex string (32 bytes). " +
       "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
@@ -15,7 +15,7 @@ function getKey(): Buffer {
 
 function keyAvailable(): boolean {
   const hex = process.env.CREDENTIAL_ENCRYPTION_KEY;
-  return typeof hex === "string" && hex.length === 64;
+  return typeof hex === "string" && /^[0-9a-fA-F]{64}$/.test(hex);
 }
 
 export function encryptUrl(plaintext: string): string {
