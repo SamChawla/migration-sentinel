@@ -136,11 +136,14 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
                     type="button"
                     role="option"
                     aria-selected={c.alias === value}
-                    onClick={() => { onChange(c.alias); setOpen(false); }}
+                    aria-disabled={!c.hasUrl}
+                    disabled={!c.hasUrl}
+                    onClick={() => { if (c.hasUrl) { onChange(c.alias); setOpen(false); } }}
                     style={{
                       display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8,
                       background: c.alias === value ? "rgba(124,58,237,.1)" : "transparent", border: "none",
-                      color: "var(--text-dim)", cursor: "pointer", textAlign: "left", fontSize: 13,
+                      color: c.hasUrl ? "var(--text-dim)" : "var(--faint)", cursor: c.hasUrl ? "pointer" : "not-allowed",
+                      textAlign: "left", fontSize: 13, opacity: c.hasUrl ? 1 : 0.6,
                     }}
                   >
                     {/* Dot = whether a URL is CONFIGURED (not a live reachability check). */}

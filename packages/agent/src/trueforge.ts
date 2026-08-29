@@ -9,6 +9,22 @@
  */
 import { TrueForge } from "@truefoundry/trueforge-sdk";
 
+/**
+ * Structural view of the SDK client — the two calls this module needs. The
+ * apply-gate leg (apply-session.ts) and its tests inject mocks through this,
+ * so the gate logic is provable without a live server; the real `TrueForge`
+ * instance satisfies it as-is.
+ */
+export interface TrueForgeTurnStreamLike {
+  withMetadata(): AsyncIterable<{ data: unknown; id?: string }>;
+}
+export interface TrueForgeLike {
+  sessions: {
+    create(req: unknown): Promise<{ data: { id: string } }>;
+    createTurnStream(sessionId: string, req: unknown): Promise<TrueForgeTurnStreamLike>;
+  };
+}
+
 export function createClient(): TrueForge {
   // The local server (`npx @truefoundry/trueforge`) runs with auth disabled, so
   // no token is required. Set TRUEFORGE_TOKEN only when pointing at a hosted /
@@ -32,11 +48,11 @@ export interface PendingApproval {
  * Stream a turn and collect any tool-approval pauses. Returns when the turn
  * closes (either done, or paused awaiting approval).
  *
- * SCAFFOLD (Phase 3.4): the exact event field names (toolCalls[].id) follow the
- * use-agent recipe; confirm against the running server on the Day-1 spike.
+ * Field names (threadId, toolCalls[].id) verified against SDK v0.1.3's
+ * ToolApprovalRequiredEvent/ToolCallRef types and spike.ts Check 3.
  */
 export async function streamUntilPauseOrDone(
-  client: TrueForge,
+  client: TrueForgeLike,
   sessionId: string,
   input: unknown[],
   onDelta?: (text: string) => void,
@@ -63,19 +79,23 @@ export async function streamUntilPauseOrDone(
   return { status, pending };
 }
 
-/** Resume a paused turn by allowing/denying the gated tool call. */
+/** Resume a paused turn by allowing/denying the gated tool call.
+ *  The stream is consumed to completion so stream-time errors surface
+ *  and the turn actually closes — returning the raw stream would leave
+ *  the TrueForge turn dangling. */
 export async function resolveApproval(
-  client: TrueForge,
+  client: TrueForgeLike,
   sessionId: string,
   pending: PendingApproval[],
   allow: boolean,
   reason?: string,
-) {
+): Promise<void> {
   const input = pending.map((p) => ({
     type: "user.tool_approval",
     threadId: p.threadId,
     toolCallId: p.toolCallId,
     approval: allow ? { status: "allow" } : { status: "deny", reason: reason ?? "Rejected at gate" },
   }));
-  return client.sessions.createTurnStream(sessionId, { input: input as any });
+  const stream = await client.sessions.createTurnStream(sessionId, { input: input as any });
+  for await (const _ of stream.withMetadata()) { /* drain */ }
 }

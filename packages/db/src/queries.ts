@@ -684,6 +684,48 @@ export async function upsertGeneratedArtifact(input: {
   return { id: a.id, version: a.version, upSql: a.upSql, downSql: a.downSql };
 }
 
+// ── TrueForge apply-gate session (Phase A) ────────────────────────────────
+
+export interface TrueforgeSessionRef {
+  sessionId: string;
+  threadId: string;
+  toolCallId: string;
+}
+
+/** Persist the paused tool.approval_required coordinates on the request so the
+ *  human decision can resolve the turn later (possibly much later). */
+export async function setTrueforgeSession(
+  requestId: string,
+  ref: TrueforgeSessionRef,
+): Promise<void> {
+  await db
+    .update(migrationRequest)
+    .set({
+      trueforgeSessionId: ref.sessionId,
+      trueforgeThreadId: ref.threadId,
+      trueforgeToolCallId: ref.toolCallId,
+      updatedAt: new Date(),
+    })
+    .where(eq(migrationRequest.id, requestId));
+}
+
+/** The persisted pause coordinates, or null when no TrueForge session was
+ *  opened for this request (deterministic-gate-only fallback). */
+export async function getTrueforgeSession(requestId: string): Promise<TrueforgeSessionRef | null> {
+  const rows = await db
+    .select({
+      sessionId: migrationRequest.trueforgeSessionId,
+      threadId: migrationRequest.trueforgeThreadId,
+      toolCallId: migrationRequest.trueforgeToolCallId,
+    })
+    .from(migrationRequest)
+    .where(eq(migrationRequest.id, requestId))
+    .limit(1);
+  const r = rows[0];
+  if (!r?.sessionId || !r.threadId || !r.toolCallId) return null;
+  return { sessionId: r.sessionId, threadId: r.threadId, toolCallId: r.toolCallId };
+}
+
 export async function setRequestStatus(requestId: string, status: RequestStatus): Promise<void> {
   await db
     .update(migrationRequest)

@@ -4,3 +4,4 @@ export * from "./pipeline";
 export * from "./generate";
 export * from "./agent";
 export * from "./apply";
+export * from "./apply-session";

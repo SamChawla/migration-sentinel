@@ -27,10 +27,12 @@ import {
   claimRequestForPipeline,
   persistSafetyReport,
   insertAuditEvent,
+  setTrueforgeSession,
 } from "@sentinel/db/queries";
 import { dumpTargetSchema, splitStatements } from "@sentinel/shadow";
 import { runSafetyPipeline, type SafetyReport } from "./pipeline";
 import { generateMigration } from "./generate";
+import { openApplyGateSession, type ApplyGateSession } from "./apply-session";
 
 export interface RunPipelineOptions {
   /** Override the target connection URL (else resolved from the request/env). */
@@ -195,6 +197,23 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
       ? primaryTable(artifact.upSql, preflightTables)
       : null;
 
+    // Phase A — arm the TrueForge leg of the gate BEFORE persisting the report
+    // (which sets awaiting_approval). This prevents a race where a user approves
+    // during the window between status change and session creation, bypassing
+    // TrueForge entirely. Best-effort: failure falls back to deterministic-only.
+    let gateSession: ApplyGateSession | null = null;
+    if (!report.blocked) {
+      try {
+        gateSession = await openApplyGateSession({
+          requestId,
+          title: req.title,
+          upSql: artifact.upSql,
+        });
+      } catch (tfErr) {
+        console.error(`[agent] TrueForge gate arming failed for ${requestId} (non-fatal):`, tfErr);
+      }
+    }
+
     await persistSafetyReport({
       ...mapped,
       seededWithData: false,
@@ -207,11 +226,13 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
       ].join(" | "),
     });
 
-    // persistSafetyReport has ATOMICALLY armed the gate and set the request to
-    // awaiting_approval/blocked — that is the authoritative outcome. The gate
-    // audit event below is cosmetic, so it is BEST-EFFORT: a failure writing it
-    // must NOT fall into the outer catch and overwrite the armed status with
-    // 'failed', stranding a complete safety report under a terminal state.
+    // Persist the TrueForge session coordinates AFTER the report — the request
+    // is now awaiting_approval, so the approval path can find the session.
+    if (gateSession) {
+      await setTrueforgeSession(requestId, gateSession);
+    }
+
+    // Best-effort audit events — must NOT overwrite the armed status with 'failed'.
     try {
       if (report.blocked) {
         await insertAuditEvent({
@@ -228,6 +249,24 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
           action: "gate.awaiting_approval",
           detail: `Analysis complete (${report.classification.overallSeverity.toUpperCase()}). Paused for human approval.`,
           tone: report.classification.overallSeverity === "green" ? "green" : "info",
+        });
+      }
+      if (gateSession) {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.agent",
+          action: "gate.trueforge_armed",
+          detail: "TrueForge apply session paused on tool.approval_required — the console decision will resolve it.",
+          tone: "info",
+          payload: { sessionId: gateSession.sessionId },
+        });
+      } else if (!report.blocked) {
+        await insertAuditEvent({
+          migrationRequestId: requestId,
+          actor: "sentinel.agent",
+          action: "gate.trueforge_unavailable",
+          detail: "TrueForge apply session could not be armed — the deterministic core gate governs alone.",
+          tone: "neutral",
         });
       }
     } catch (auditErr) {

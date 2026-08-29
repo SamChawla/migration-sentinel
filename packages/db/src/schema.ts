@@ -55,6 +55,13 @@ export const migrationRequest = pgTable(
     title: text("title").notNull(),
     status: requestStatus("status").notNull().default("received"),
     requestedBy: text("requested_by").notNull(),
+    // TrueForge apply-gate leg (Phase A): coordinates of the paused
+    // tool.approval_required turn, so the human decision can resolve it across
+    // an arbitrarily long approval delay. Null = no session opened (fallback:
+    // the deterministic core gate governs alone).
+    trueforgeSessionId: text("trueforge_session_id"),
+    trueforgeThreadId: text("trueforge_thread_id"),
+    trueforgeToolCallId: text("trueforge_tool_call_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

@@ -17,6 +17,7 @@
     "db:seed": "tsx scripts/seed.ts",
     "db:seed:sentinel": "tsx scripts/seed-sentinel.ts",
     "spike": "tsx packages/agent/src/spike.ts",
+    "spike:sandbox": "tsx packages/agent/src/spike-sandbox.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web/tsconfig.json",
