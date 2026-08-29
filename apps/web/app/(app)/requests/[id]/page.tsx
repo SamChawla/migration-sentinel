@@ -205,6 +205,7 @@ function liveScene(
   const bare = model.table.replace(/^public\./, "");
   const primary =
     live.tables.find((t) => t.name === model.table) ??
+    live.tables.find((t) => t.name === `public.${bare}`) ??
     live.tables.find((t) => t.name.endsWith(`.${bare}`));
   if (!primary) return null;
 

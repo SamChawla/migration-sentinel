@@ -63,15 +63,33 @@ export async function introspectSchema(
   // When a priorityTable is given, ensure it survives truncation even if its
   // alphabetical position would place it beyond the cap.
   const prio = opts.priorityTable;
-  const TABLES_CTE = `
-    WITH _tables AS (
-      SELECT c.oid, n.nspname AS schema, c.relname AS table_name
-        FROM pg_class c
-        JOIN pg_namespace n ON n.oid = c.relnamespace
-       WHERE c.relkind IN ('r','p') AND ${NS}
-       ORDER BY n.nspname, c.relname
-       LIMIT ${maxTables + 1}
-    )`;
+  const prioSchema = prio?.includes(".") ? prio.split(".")[0] : undefined;
+  const prioName = prio?.includes(".") ? prio.split(".")[1] : prio;
+  const safePrioSchema = prioSchema?.replace(/'/g, "''");
+  const safePrioName = prioName?.replace(/'/g, "''");
+  const TABLES_CTE = prio
+    ? `WITH _tables AS (
+        (SELECT c.oid, n.nspname AS schema, c.relname AS table_name
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r','p') AND ${NS}
+         ORDER BY n.nspname, c.relname
+         LIMIT ${maxTables + 1})
+        UNION
+        (SELECT c.oid, n.nspname AS schema, c.relname AS table_name
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r','p') AND ${NS}
+           AND n.nspname = '${safePrioSchema}' AND c.relname = '${safePrioName}')
+      )`
+    : `WITH _tables AS (
+        SELECT c.oid, n.nspname AS schema, c.relname AS table_name
+          FROM pg_class c
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+         WHERE c.relkind IN ('r','p') AND ${NS}
+         ORDER BY n.nspname, c.relname
+         LIMIT ${maxTables + 1}
+      )`;
 
   const columns = await client.query(
     `${TABLES_CTE}
