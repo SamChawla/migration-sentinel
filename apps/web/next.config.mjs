@@ -12,6 +12,9 @@ const nextConfig = {
     "@sentinel/qodo",
   ],
   experimental: { externalDir: true },
+  // Hide the dev-mode indicator badge — it sits bottom-left, on top of the
+  // account avatar. Dev-only anyway (production never renders it).
+  devIndicators: false,
 };
 
 export default nextConfig;
