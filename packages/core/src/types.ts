@@ -15,6 +15,7 @@ export type RequestStatus =
   | "failed";
 
 export type IntakeKind = "nl_intent" | "raw_sql" | "github_pr";
+export type DbEnvironment = "local" | "dev" | "staging" | "prod";
 export type Reversibility = "reversible" | "lossy" | "irreversible";
 export type Severity = "green" | "amber" | "red";
 export type RunStatus = "pending" | "running" | "succeeded" | "failed";
