@@ -203,7 +203,9 @@ function liveScene(
 ): { tables: SceneTable[]; edges: FkEdge[] } | null {
   if (model.table === UNPARSED_TABLE) return null;
   const bare = model.table.replace(/^public\./, "");
-  const primary = live.tables.find((t) => t.name === model.table || t.name.endsWith(`.${bare}`));
+  const primary =
+    live.tables.find((t) => t.name === model.table) ??
+    live.tables.find((t) => t.name.endsWith(`.${bare}`));
   if (!primary) return null;
 
   const overlay = new Map(model.columns.map((c) => [c.name, c]));

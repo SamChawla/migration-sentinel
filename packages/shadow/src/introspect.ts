@@ -53,37 +53,49 @@ const DEFAULT_MAX_TABLES = 40;
 
 export async function introspectSchema(
   client: QueryableClient,
-  opts: { maxTables?: number } = {},
+  opts: { maxTables?: number; priorityTable?: string } = {},
 ): Promise<SchemaIntrospection> {
   const maxTables = Math.max(1, opts.maxTables ?? DEFAULT_MAX_TABLES);
 
-  // Columns with PRECISE types via format_type — same shape schemaFingerprint
-  // relies on (rollback.ts), restricted to ordinary/partitioned tables.
+  // Build a CTE that limits the table list at the catalog level so the column,
+  // PK, and FK queries only touch maxTables worth of data — large catalogs no
+  // longer materialize every table's columns before truncation.
+  // When a priorityTable is given, ensure it survives truncation even if its
+  // alphabetical position would place it beyond the cap.
+  const prio = opts.priorityTable;
+  const TABLES_CTE = `
+    WITH _tables AS (
+      SELECT c.oid, n.nspname AS schema, c.relname AS table_name
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE c.relkind IN ('r','p') AND ${NS}
+       ORDER BY n.nspname, c.relname
+       LIMIT ${maxTables + 1}
+    )`;
+
   const columns = await client.query(
-    `SELECT n.nspname AS schema, c.relname AS table_name, a.attname AS column_name,
+    `${TABLES_CTE}
+     SELECT t.schema, t.table_name, a.attname AS column_name,
             format_type(a.atttypid, a.atttypmod) AS type, a.attnotnull AS notnull
-       FROM pg_attribute a
-       JOIN pg_class c ON c.oid = a.attrelid AND c.relkind IN ('r','p')
-       JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE a.attnum > 0 AND NOT a.attisdropped AND ${NS}
-      ORDER BY n.nspname, c.relname, a.attnum`,
+       FROM _tables t
+       JOIN pg_attribute a ON a.attrelid = t.oid
+      WHERE a.attnum > 0 AND NOT a.attisdropped
+      ORDER BY t.schema, t.table_name, a.attnum`,
   );
 
   const pks = await client.query(
-    `SELECT n.nspname AS schema, c.relname AS table_name, a.attname AS column_name
-       FROM pg_constraint con
-       JOIN pg_class c ON c.oid = con.conrelid
-       JOIN pg_namespace n ON n.oid = c.relnamespace
+    `${TABLES_CTE}
+     SELECT t.schema, t.table_name, a.attname AS column_name
+       FROM _tables t
+       JOIN pg_constraint con ON con.conrelid = t.oid AND con.contype = 'p'
        JOIN unnest(con.conkey) AS k(attnum) ON true
-       JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = k.attnum
-      WHERE con.contype = 'p' AND ${NS}
+       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
       ORDER BY 1, 2, 3`,
   );
 
-  // FK COLUMN PAIRS: conkey/confkey are parallel arrays, so the two unnests are
-  // joined on ordinality — without it a composite FK's columns pair up wrong.
   const fkRows = await client.query(
-    `SELECT fn.nspname AS from_schema, fc.relname AS from_table, fa.attname AS from_column,
+    `${TABLES_CTE}
+     SELECT fn.nspname AS from_schema, fc.relname AS from_table, fa.attname AS from_column,
             tn.nspname AS to_schema, tc.relname AS to_table, ta.attname AS to_column
        FROM pg_constraint con
        JOIN pg_class fc ON fc.oid = con.conrelid
@@ -94,7 +106,8 @@ export async function introspectSchema(
        JOIN unnest(con.confkey) WITH ORDINALITY AS dst(attnum, ord) ON dst.ord = src.ord
        JOIN pg_attribute fa ON fa.attrelid = fc.oid AND fa.attnum = src.attnum
        JOIN pg_attribute ta ON ta.attrelid = tc.oid AND ta.attnum = dst.attnum
-      WHERE con.contype = 'f' AND fn.nspname !~ '^pg_' AND fn.nspname <> 'information_schema'
+      WHERE con.contype = 'f'
+        AND (fc.oid IN (SELECT oid FROM _tables) OR tc.oid IN (SELECT oid FROM _tables))
       ORDER BY 1, 2, con.conname, src.ord`,
   );
 
@@ -122,7 +135,13 @@ export async function introspectSchema(
 
   let tables = Array.from(tableMap.values());
   const truncated = tables.length > maxTables;
-  if (truncated) tables = tables.slice(0, maxTables);
+  if (truncated) {
+    tables = tables.slice(0, maxTables);
+    if (prio && !tables.some((t) => t.name === prio)) {
+      const extra = tableMap.get(prio);
+      if (extra) tables.push(extra);
+    }
+  }
   const kept = new Set(tables.map((t) => t.name));
 
   const fks: IntrospectedFk[] = fkRows.rows
@@ -146,7 +165,7 @@ export async function introspectSchema(
  */
 export async function introspectConnection(
   url: string,
-  opts: { deadlineMs?: number; maxTables?: number } = {},
+  opts: { deadlineMs?: number; maxTables?: number; priorityTable?: string } = {},
 ): Promise<SchemaIntrospection> {
   const deadlineMs = Math.max(1000, opts.deadlineMs ?? 8000);
   const client = new Client({
@@ -166,7 +185,7 @@ export async function introspectConnection(
     await client.connect();
     await client.query("BEGIN READ ONLY");
     try {
-      return await introspectSchema(client, { maxTables: opts.maxTables });
+      return await introspectSchema(client, { maxTables: opts.maxTables, priorityTable: opts.priorityTable });
     } finally {
       await client.query("ROLLBACK").catch(() => {});
     }

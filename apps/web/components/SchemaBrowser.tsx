@@ -35,29 +35,30 @@ export function SchemaBrowser({ alias }: { alias: string }) {
       setError(null);
       return;
     }
-    let cancelled = false;
+    const ac = new AbortController();
     setLoading(true);
     setError(null);
     setSchema(null);
-    fetch(`/api/connections/${encodeURIComponent(alias)}/schema`)
+    fetch(`/api/connections/${encodeURIComponent(alias)}/schema`, { signal: ac.signal })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.error || `Server returned ${r.status}`);
         return data as BrowserSchema;
       })
       .then((d) => {
-        if (cancelled) return;
+        if (ac.signal.aborted) return;
         setSchema(d);
-        setOpen(new Set(d.tables.slice(0, 1).map((t) => t.name))); // first table open
+        setOpen(new Set(d.tables.slice(0, 1).map((t) => t.name)));
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load the schema.");
+        if (ac.signal.aborted) return;
+        setError(e instanceof Error ? e.message : "Could not load the schema.");
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!ac.signal.aborted) setLoading(false);
       });
     return () => {
-      cancelled = true;
+      ac.abort();
     };
   }, [alias]);
 
