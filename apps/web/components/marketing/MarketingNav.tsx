@@ -2,6 +2,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+// Demo: when open access is on, the console needs no login — link straight in.
+const OPEN_ACCESS = ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").toLowerCase());
+
 export function MarketingNav() {
   const pathname = usePathname();
 
@@ -22,7 +25,7 @@ export function MarketingNav() {
           <Link href="/pricing" className={isActive("/pricing") ? "mk-link-active" : ""}>Pricing</Link>
           <Link href="/about" className={isActive("/about") ? "mk-link-active" : ""}>About</Link>
           <Link href="/demo" className={isActive("/demo") ? "mk-link-active" : ""}>Demo</Link>
-          <Link href="/login" className="btn btn-cyan btn-sm">Open console</Link>
+          <Link href={OPEN_ACCESS ? "/dashboard" : "/login"} className="btn btn-cyan btn-sm">Open console</Link>
         </div>
       </div>
     </nav>

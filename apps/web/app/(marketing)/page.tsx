@@ -2,6 +2,9 @@ import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
+// Demo: when open access is on, the console needs no login — link straight in.
+const OPEN_ACCESS = ["1", "true", "yes"].includes((process.env.NEXT_PUBLIC_DEMO_OPEN_ACCESS ?? "").toLowerCase());
+
 type Tone = "cyan" | "warn" | "safe" | "danger";
 const PIPELINE: { n: string; title: string; sub: string; tone: Tone; gate?: boolean }[] = [
   { n: "01", title: "Intake", sub: "plain English, SQL, or a PR", tone: "cyan" },
@@ -49,11 +52,15 @@ export default function Landing() {
           dry-runs them on a shadow database, proves the rollback, and refuses to touch prod until a human approves.
         </p>
         <div className="hero-ctas">
-          <Link href="/login" className="btn btn-cyan btn-lg">Login to Console</Link>
+          <Link href={OPEN_ACCESS ? "/dashboard" : "/login"} className="btn btn-cyan btn-lg">
+            {OPEN_ACCESS ? "Open the Console" : "Login to Console"}
+          </Link>
           <Link href="/demo" className="btn btn-lg">Watch the replay demo</Link>
         </div>
         <p style={{ margin: "14px 0 0", fontSize: 13, color: "var(--text-dim)" }}>
-          Demo credentials are pre-filled — just click <b style={{ color: "var(--text)" }}>Login to Console</b>. No signup.
+          {OPEN_ACCESS
+            ? "No login for the demo — click Open the Console and you're in."
+            : "Demo credentials are pre-filled — just click Login to Console. No signup."}
         </p>
       </header>
 
