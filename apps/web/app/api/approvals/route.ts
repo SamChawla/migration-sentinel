@@ -246,8 +246,6 @@ export async function POST(req: Request) {
       assertGate: () =>
         assertApproved({
           decision: "approved",
-          // The ENV-DERIVED requirement (computed above), not the stored flag —
-          // the allow leg holds the same bar as the pre-check.
           requiresTypedConfirm,
           typedConfirmValue: typedConfirm ?? null,
           expectedConfirmValue,
