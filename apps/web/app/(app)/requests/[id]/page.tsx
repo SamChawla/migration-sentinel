@@ -48,6 +48,7 @@ type Sev = "green" | "amber" | "red";
 interface SceneCol {
   name: string;
   type: string;
+  pk?: boolean;
   affected: Affected;
   severity?: Sev;
   opLabel?: string;
@@ -56,9 +57,9 @@ interface SceneCol {
 // Real demo-target schema (fixtures/target_schema.sql). The 3D reflects the
 // actual table the migration touches, so decided (applied/rejected/blocked)
 // requests still render their table instead of an empty stack.
-const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
+const DEMO_TABLES: Record<string, { name: string; type: string; pk?: boolean }[]> = {
   users: [
-    { name: "id", type: "bigserial" },
+    { name: "id", type: "bigserial", pk: true },
     { name: "email", type: "text" },
     { name: "full_name", type: "text" },
     { name: "is_active", type: "boolean" },
@@ -66,7 +67,7 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
     { name: "created_at", type: "timestamptz" },
   ],
   orders: [
-    { name: "id", type: "bigserial" },
+    { name: "id", type: "bigserial", pk: true },
     { name: "user_id", type: "bigint" },
     { name: "amount_cents", type: "integer" },
     { name: "status", type: "text" },
@@ -82,6 +83,13 @@ const DEMO_TABLES: Record<string, { name: string; type: string }[]> = {
 // real fixture table, so it never matches SCHEMA_FKS and never fabricates a FK.
 const UNPARSED_TABLE = "public.?";
 
+// Own-property lookup: the SQL is user text, so identifiers like "constructor"
+// or "toString" must not resolve to Object.prototype members and crash the
+// scene build when we try to .map() them.
+function fixtureColumns(table: string): { name: string; type: string; pk?: boolean }[] | undefined {
+  return Object.prototype.hasOwnProperty.call(DEMO_TABLES, table) ? DEMO_TABLES[table] : undefined;
+}
+
 function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   const sql = upSql.toLowerCase();
 
@@ -91,7 +99,7 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
     sql.match(/(?:update|delete\s+from|insert\s+into)\s+(?:public\.)?(\w+)/) ||
     sql.match(/create\s+index[^;]*\bon\s+(?:public\.)?(\w+)/);
   const parsed = tableMatch?.[1];
-  const known = parsed && parsed in DEMO_TABLES;
+  const fixture = parsed ? fixtureColumns(parsed) : undefined;
 
   // Use the REAL parsed table name. When nothing parsed, fall back to an explicit
   // UNPARSED sentinel — NOT public.users — so an unrecognized statement can't
@@ -99,9 +107,7 @@ function db3dModel(upSql: string): { table: string; columns: SceneCol[] } {
   // fixture COLUMNS for a table we actually have a fixture for; otherwise start
   // EMPTY (the op-specific logic below still highlights the columns it touches).
   const table = parsed ? `public.${parsed}` : UNPARSED_TABLE;
-  let columns: SceneCol[] = known
-    ? DEMO_TABLES[parsed as keyof typeof DEMO_TABLES].map((c) => ({ ...c, affected: "none" }))
-    : [];
+  let columns: SceneCol[] = fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
   const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
     columns.map((c) => ({ ...c, affected, severity, opLabel }));
 
@@ -208,8 +214,8 @@ function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
   // still show its columns (so the card isn't empty and FK links can anchor).
   let primaryCols = primary.columns;
   if (primaryCols.length === 0) {
-    const key = primaryName.replace(/^public\./, "") as keyof typeof DEMO_TABLES;
-    if (DEMO_TABLES[key]) primaryCols = DEMO_TABLES[key].map((c) => ({ ...c, affected: "none" as Affected }));
+    const fix = fixtureColumns(primaryName.replace(/^public\./, ""));
+    if (fix) primaryCols = fix.map((c) => ({ ...c, affected: "none" as Affected }));
   }
   const tables: SceneTable[] = [{ name: primaryName, columns: primaryCols, role: "primary" }];
 
@@ -220,8 +226,7 @@ function db3dScene(upSql: string): { tables: SceneTable[]; edges: FkEdge[] } {
   for (const e of edges) neighbours.add(e.fromTable === primaryName ? e.toTable : e.fromTable);
 
   for (const name of neighbours) {
-    const key = name.replace(/^public\./, "");
-    const cols = DEMO_TABLES[key as keyof typeof DEMO_TABLES];
+    const cols = fixtureColumns(name.replace(/^public\./, ""));
     if (cols) tables.push({ name, columns: cols.map((c) => ({ ...c, affected: "none" as Affected })), role: "related" });
   }
   return { tables, edges };
