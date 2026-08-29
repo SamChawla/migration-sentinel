@@ -534,9 +534,10 @@ export async function resetApproval(requestId: string): Promise<boolean> {
 // ── Pipeline persistence (agent orchestrator writes these) ────────────────
 
 /** Resolve the connection URL for a request's target DB.
- *  Prefers the stored per-target URL; falls back to $TARGET_DB_URL (single-target
- *  hackathon default). Read + write use the same URL here; a production build
- *  would hand back distinct read-only vs write credentials. */
+ *  Returns the target row's stored URL, or null when the target has none —
+ *  there is NO environment-variable fallback (see the note below). Read + write
+ *  use the same URL here; a production build would hand back distinct
+ *  read-only vs write credentials. */
 export async function getRequestTargetUrl(requestId: string): Promise<string | null> {
   const rows = await db
     .select({ url: targetDatabase.connectionUrl })
