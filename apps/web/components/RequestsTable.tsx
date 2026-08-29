@@ -13,10 +13,18 @@ const FILTERS = [
   { key: "failed", label: "Failed" },
 ] as const;
 
-function chipHref(status: string, q: string): string {
+// Encode a non-default sort so it survives filter/search navigation. Mirrors the
+// URL scheme sortHref emits: `sort` only off the default column, `dir` only off desc.
+function applySort(sp: URLSearchParams, sort: string, dir: string): void {
+  if (sort && sort !== "created_at") sp.set("sort", sort);
+  if (dir && dir !== "desc") sp.set("dir", dir);
+}
+
+function chipHref(status: string, q: string, sort: string, dir: string): string {
   const sp = new URLSearchParams();
   if (status && status !== "all") sp.set("status", status);
   if (q) sp.set("q", q);
+  applySort(sp, sort, dir);
   const qs = sp.toString();
   return qs ? `/requests?${qs}` : "/requests";
 }
@@ -32,23 +40,56 @@ export function RequestsTable({
   filterable = false,
   query = "",
   activeFilter = "all",
+  sort = "created_at",
+  dir = "desc",
 }: {
   records: RequestRecord[];
   filterable?: boolean;
   query?: string;
   activeFilter?: string;
+  sort?: string;
+  dir?: "asc" | "desc";
 }) {
+  // Clicking a sortable header toggles asc/desc (server-side, across all pages);
+  // switching columns starts at desc. Preserves search + status, resets to page 1.
+  function sortHref(col: string): string {
+    const sp = new URLSearchParams();
+    if (query) sp.set("q", query);
+    if (activeFilter && activeFilter !== "all") sp.set("status", activeFilter);
+    const nextDir = sort === col && dir === "desc" ? "asc" : "desc";
+    applySort(sp, col, nextDir);
+    const qs = sp.toString();
+    return qs ? `/requests?${qs}` : "/requests";
+  }
+  function SortTh({ col, label, invert = false }: { col: string; label: string; invert?: boolean }) {
+    const active = sort === col;
+    // `invert` is for columns whose DISPLAYED value runs opposite the stored
+    // one: Age renders now − created_at, so ascending created_at shows the
+    // LARGEST ages first. The arrow must describe the values the user sees.
+    const shownAsc = invert ? dir === "desc" : dir === "asc";
+    return (
+      <th>
+        <Link href={sortHref(col)} className="th-sort" style={{ color: active ? "var(--text)" : "inherit", display: "inline-flex", alignItems: "center", gap: 5 }}>
+          {label}
+          <span style={{ fontSize: 9, color: active ? "var(--cyan)" : "var(--faint)" }}>{active ? (shownAsc ? "▲" : "▼") : "↕"}</span>
+        </Link>
+      </th>
+    );
+  }
   return (
     <>
       {filterable && (
         <div className="filters">
           {FILTERS.map((f) => (
-            <Link key={f.key} href={chipHref(f.key, query)} className={`fchip${activeFilter === f.key ? " on" : ""}`}>
+            <Link key={f.key} href={chipHref(f.key, query, sort, dir)} className={`fchip${activeFilter === f.key ? " on" : ""}`}>
               {f.label}
             </Link>
           ))}
           <form action="/requests" method="get" style={{ marginLeft: "auto" }}>
             {activeFilter && activeFilter !== "all" && <input type="hidden" name="status" value={activeFilter} />}
+            {/* Carry the active sort through a search so it isn't reset to created_at desc. */}
+            {sort && sort !== "created_at" && <input type="hidden" name="sort" value={sort} />}
+            {dir && dir !== "desc" && <input type="hidden" name="dir" value={dir} />}
             <input
               className="field"
               name="q"
@@ -63,12 +104,12 @@ export function RequestsTable({
         <table className="table">
           <thead>
             <tr>
-              <th>Migration</th>
-              <th>Target</th>
+              <SortTh col="title" label="Migration" />
+              <SortTh col="target" label="Target" />
               <th>Severity</th>
               <th>Rollback</th>
-              <th>Status</th>
-              <th>Age</th>
+              <SortTh col="status" label="Status" />
+              <SortTh col="created_at" label="Age" invert />
               <th></th>
             </tr>
           </thead>

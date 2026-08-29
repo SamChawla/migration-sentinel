@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
+import { eq, asc, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -129,22 +129,35 @@ function requestFilterConditions(opts: { q?: string; status?: string }) {
   return conds;
 }
 
+// Whitelisted sortable columns (server-side, so a sort spans ALL pages). Only
+// columns present in the main list query — derived fields (severity, rollback)
+// are hydrated per row and are not sortable here.
+export const REQUEST_SORTS = {
+  created_at: migrationRequest.createdAt,
+  title: migrationRequest.title,
+  target: targetDatabase.connectionAlias,
+  status: migrationRequest.status,
+} as const;
+export type RequestSort = keyof typeof REQUEST_SORTS;
+
 export async function listRequests(
-  opts: { limit?: number; offset?: number; q?: string; status?: string } = {},
+  opts: { limit?: number; offset?: number; q?: string; status?: string; sort?: string; dir?: "asc" | "desc" } = {},
 ): Promise<RequestRecord[]> {
   // Bounded by default so the list path can't grow unbounded with history.
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
   const offset = Math.max(opts.offset ?? 0, 0);
   const conds = requestFilterConditions(opts);
+  const sortCol = REQUEST_SORTS[(opts.sort ?? "") as RequestSort] ?? migrationRequest.createdAt;
+  const dirFn = opts.dir === "asc" ? asc : desc;
   const rows = await db
     .select()
     .from(migrationRequest)
     .leftJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
     .leftJoin(approval, eq(approval.migrationRequestId, migrationRequest.id))
     .where(conds.length ? and(...conds) : undefined)
-    // (created_at, id) is a TOTAL order — created_at alone is non-unique, so
-    // offset paging over ties would duplicate/skip rows between page requests.
-    .orderBy(desc(migrationRequest.createdAt), desc(migrationRequest.id))
+    // Tiebreak by id so (sort, id) is a TOTAL order — a non-unique sort column
+    // alone would let offset paging duplicate/skip rows between page requests.
+    .orderBy(dirFn(sortCol), desc(migrationRequest.id))
     .limit(limit)
     .offset(offset);
 
