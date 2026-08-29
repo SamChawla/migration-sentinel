@@ -117,15 +117,10 @@ function db3dModel(upSql: string): SqlModel {
     sql.match(new RegExp(String.raw`create\s+index[^;]*\bon\s+${T}`));
   const schema = tableMatch?.[1] ?? "public";
   const parsed = tableMatch?.[2];
-  // Only use fixture columns when the schema is "public" — an identically named
-  // table in another schema (e.g. audit.users) must not inherit public.users cols.
-  const fixture = parsed && schema === "public" ? fixtureColumns(parsed) : undefined;
 
   const table = parsed ? `${schema}.${parsed}` : UNPARSED_TABLE;
   const isCreate = /\bcreate\s+table\b/.test(sql);
-  // For CREATE TABLE, parse the column definitions from the SQL body rather than
-  // preloading fixtures (which would duplicate cols for known tables like users).
-  let columns: SceneCol[] = !isCreate && fixture ? fixture.map((c) => ({ ...c, affected: "none" })) : [];
+  let columns: SceneCol[] = [];
   const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
     columns.map((c) => ({ ...c, affected, severity, opLabel }));
 
