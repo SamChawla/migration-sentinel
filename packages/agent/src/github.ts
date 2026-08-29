@@ -1,0 +1,191 @@
+/**
+ * GitHub client (PR3, doc 11 §5) — plain fetch against api.github.com, no
+ * octokit. Every call: Bearer token, `Accept: application/vnd.github+json`,
+ * pinned API version, an 8s abort timeout, and encoded repo segments. Non-2xx
+ * becomes a typed GithubApiError that NEVER carries the token.
+ *
+ * The token is supplied by the caller and read ONLY from
+ * `process.env.GITHUB_TOKEN` at the call sites — never the DB, argv or a URL.
+ */
+
+export class GithubApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly path: string,
+  ) {
+    super(message);
+    this.name = "GithubApiError";
+  }
+}
+
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/** Refuse anything that isn't a plain `owner/repo` — no traversal, no URLs. */
+export function assertRepoName(repo: string): void {
+  if (!REPO_RE.test(repo) || repo.includes("..")) {
+    throw new GithubApiError(`Invalid repository name.`, 400, repo);
+  }
+}
+
+export type ChecksState = "none" | "pending" | "failure" | "success";
+
+/** Roll a commit's check runs up to one state the UI can chip. */
+export function reduceChecksState(
+  runs: { status?: string | null; conclusion?: string | null }[],
+): ChecksState {
+  if (runs.length === 0) return "none";
+  if (runs.some((r) => ["failure", "timed_out", "cancelled", "action_required"].includes(r.conclusion ?? "")))
+    return "failure";
+  if (runs.some((r) => r.status !== "completed")) return "pending";
+  return "success";
+}
+
+export interface PrFile {
+  filename: string;
+  status: string;
+  sha: string;
+}
+
+export interface PrInfo {
+  number: number;
+  title: string;
+  state: string;
+  headSha: string;
+  htmlUrl: string;
+  merged: boolean;
+}
+
+export interface GithubClientOptions {
+  token: string;
+  /** Injectable for tests. Defaults to global fetch. */
+  fetchImpl?: typeof fetch;
+  baseUrl?: string;
+  timeoutMs?: number;
+}
+
+export interface GithubClient {
+  getRepo(repo: string): Promise<Record<string, unknown>>;
+  getPr(repo: string, number: number): Promise<PrInfo>;
+  getPrFiles(repo: string, number: number): Promise<PrFile[]>;
+  getFileContents(repo: string, path: string, ref: string): Promise<string>;
+  getChecks(repo: string, ref: string): Promise<ChecksState>;
+  createComment(repo: string, issueNumber: number, body: string): Promise<{ id: number }>;
+  updateComment(repo: string, commentId: number, body: string): Promise<{ id: number }>;
+}
+
+/** owner/repo → "owner/repo" with each segment individually encoded. */
+function encodeRepo(repo: string): string {
+  assertRepoName(repo);
+  const [owner, name] = repo.split("/");
+  return `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+}
+
+export function createGithubClient(opts: GithubClientOptions): GithubClient {
+  const fetchImpl = opts.fetchImpl ?? fetch;
+  const baseUrl = (opts.baseUrl ?? "https://api.github.com").replace(/\/$/, "");
+  const timeoutMs = opts.timeoutMs ?? 8000;
+
+  async function call<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<T> {
+    const res = await fetchImpl(`${baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${opts.token}`,
+        Accept: "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "migration-sentinel",
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) {
+      // The error surface carries only status + path + GitHub's message —
+      // never the request headers, so the token can't leak into logs/audits.
+      const detail = await res
+        .json()
+        .then((j) => (j as { message?: string }).message ?? "")
+        .catch(() => "");
+      throw new GithubApiError(
+        `GitHub API ${res.status} on ${path}${detail ? ` — ${detail}` : ""}`,
+        res.status,
+        path,
+      );
+    }
+    return (await res.json()) as T;
+  }
+
+  return {
+    // async so a repo-name refusal REJECTS rather than throwing synchronously —
+    // callers awaiting any method get one uniform failure mode.
+    async getRepo(repo) {
+      return call("GET", `/repos/${encodeRepo(repo)}`);
+    },
+
+    async getPr(repo, number) {
+      const pr = await call<Record<string, any>>("GET", `/repos/${encodeRepo(repo)}/pulls/${Number(number)}`);
+      return {
+        number: Number(pr.number ?? number),
+        title: String(pr.title ?? ""),
+        state: String(pr.state ?? "unknown"),
+        headSha: String(pr.head?.sha ?? ""),
+        htmlUrl: String(pr.html_url ?? ""),
+        merged: Boolean(pr.merged),
+      };
+    },
+
+    async getPrFiles(repo, number) {
+      const files = await call<Record<string, any>[]>(
+        "GET",
+        `/repos/${encodeRepo(repo)}/pulls/${Number(number)}/files?per_page=100`,
+      );
+      return (files ?? []).map((f) => ({
+        filename: String(f.filename ?? ""),
+        status: String(f.status ?? ""),
+        sha: String(f.sha ?? ""),
+      }));
+    },
+
+    async getFileContents(repo, path, ref) {
+      const encPath = path.split("/").map(encodeURIComponent).join("/");
+      const file = await call<Record<string, any>>(
+        "GET",
+        `/repos/${encodeRepo(repo)}/contents/${encPath}?ref=${encodeURIComponent(ref)}`,
+      );
+      if (typeof file.content !== "string") {
+        throw new GithubApiError(`No file content returned for ${path}.`, 502, path);
+      }
+      return Buffer.from(file.content, "base64").toString("utf8");
+    },
+
+    async getChecks(repo, ref) {
+      const data = await call<{ check_runs?: { status?: string; conclusion?: string | null }[] }>(
+        "GET",
+        `/repos/${encodeRepo(repo)}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`,
+      );
+      return reduceChecksState(data.check_runs ?? []);
+    },
+
+    async createComment(repo, issueNumber, body) {
+      const c = await call<{ id: number }>(
+        "POST",
+        `/repos/${encodeRepo(repo)}/issues/${Number(issueNumber)}/comments`,
+        { body },
+      );
+      return { id: Number(c.id) };
+    },
+
+    async updateComment(repo, commentId, body) {
+      const c = await call<{ id: number }>(
+        "PATCH",
+        `/repos/${encodeRepo(repo)}/issues/comments/${Number(commentId)}`,
+        { body },
+      );
+      return { id: Number(c.id) };
+    },
+  };
+}
