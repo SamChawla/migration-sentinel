@@ -146,11 +146,23 @@ export async function applyMigration(requestId: string, opts: ApplyOptions = {})
     rec.approval.requiresTypedConfirm ||
     escalateForEnvironment(storedDisposition, rec.overallSeverity, rec.environment) ===
       "typed_confirm";
+  let expectedConfirmValue = rec.approval.expectedConfirm ?? null;
+  if (requiresTypedConfirm && !expectedConfirmValue) {
+    const tableM =
+      artifact.upSql.match(/\b(?:ALTER|DROP)\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w."]+)/i) ??
+      artifact.upSql.match(/\bUPDATE\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      artifact.upSql.match(/\bDELETE\s+FROM\s+(?:ONLY\s+)?([\w."]+)/i) ??
+      artifact.upSql.match(/\bTRUNCATE\s+(?:TABLE\s+)?([\w."]+)/i) ??
+      artifact.upSql.match(/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([\w."]+)/i);
+    expectedConfirmValue = tableM
+      ? tableM[1].replace(/"/g, "").split(".").pop() ?? "CONFIRM"
+      : "CONFIRM";
+  }
   assertApproved({
     decision: rec.approval.decision,
     requiresTypedConfirm,
     typedConfirmValue: opts.typedConfirm ?? null,
-    expectedConfirmValue: rec.approval.expectedConfirm ?? null,
+    expectedConfirmValue,
     blocked,
   });
 

@@ -635,6 +635,32 @@ export async function addTargetConnection(
   };
 }
 
+/** Update the environment tag on an existing connection. Safe to call on
+ *  connections with in-flight requests — the environment only affects NEW
+ *  requests' gating rules (typed-confirm, promotion lock). */
+export async function updateTargetEnvironment(
+  alias: string,
+  environment: DbEnvironment,
+): Promise<{ ok: true; row: TargetDbRow } | { ok: false; reason: "not_found" }> {
+  const rows = await db
+    .update(targetDatabase)
+    .set({ environment })
+    .where(eq(targetDatabase.connectionAlias, alias))
+    .returning();
+  if (rows.length === 0) return { ok: false, reason: "not_found" };
+  const r = rows[0];
+  return {
+    ok: true,
+    row: {
+      id: r.id,
+      name: r.name,
+      alias: r.connectionAlias,
+      environment: r.environment as DbEnvironment,
+      hasUrl: !!r.connectionUrl,
+    },
+  };
+}
+
 export interface IntakeRow {
   intakeKind: "nl_intent" | "raw_sql" | "github_pr";
   payload: Record<string, unknown>;
