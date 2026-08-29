@@ -116,7 +116,7 @@ export async function runAgentPipeline(requestId: string, opts: RunPipelineOptio
     // failure) must land it in 'failed' with an audit event, not strand it in
     // 'generating' forever where no retry can re-claim a non-'received' request.
     const targetUrl = opts.targetUrl ?? (await getRequestTargetUrl(requestId));
-    if (!targetUrl) throw new Error("runAgentPipeline: no target URL (set TARGET_DB_URL or target.connection_url)");
+    if (!targetUrl) throw new Error("runAgentPipeline: the request's target database has no stored connection URL — add one via the connections picker (POST /api/connections) or set target_database.connection_url");
     const shadowAdminUrl = opts.shadowAdminUrl ?? process.env.SHADOW_ADMIN_URL;
     if (!shadowAdminUrl) throw new Error("runAgentPipeline: SHADOW_ADMIN_URL not set");
 
