@@ -4,6 +4,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { SvgDefs } from "./SvgDefs";
 import { DatabaseIcon, GaugeIcon, ShieldIcon, LeverIcon } from "./icons";
+import { Walkthrough } from "@/components/Walkthrough";
 
 function initialsOf(name: string): string {
   const parts = name.replace(/@.*$/, "").split(/[\s._-]+/).filter(Boolean);
@@ -84,7 +85,7 @@ export function DeckShell({
         </header>
 
         {/* Instrument rail */}
-        <nav className="rail" aria-label="Main navigation">
+        <nav className="rail" aria-label="Main navigation" data-tour="nav">
           {NAV.map((n) => {
             const active = n.exact ? pathname === n.href : pathname.startsWith(n.href);
             return (
@@ -123,6 +124,7 @@ export function DeckShell({
           {children}
         </main>
       </div>
+      <Walkthrough />
     </>
   );
 }
