@@ -321,6 +321,11 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
     getGithubLink(r.id).catch(() => null),
     r.status === "failed" ? getLatestFailureDetail(r.id).catch(() => null) : Promise.resolve(null),
   ]);
+  // An `apply.failed` lands in 'failed' just like a pre-gate analysis failure, but
+  // its safety story is the opposite: the target may already be partially changed,
+  // so the banner must NOT claim "nothing was applied" or offer a blind retry
+  // (retryRequest refuses apply-stage retries anyway).
+  const applyFailed = failureDetail?.action === "apply.failed";
   const prodLocked =
     r.environment === "prod" &&
     (r.status === "awaiting_approval" || r.status === "blocked") &&
@@ -392,22 +397,32 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
           <span className="pulse-dot" style={{ marginTop: 4 }} />
           <div style={{ flex: 1 }}>
             <div>
-              The analysis pipeline failed before reaching the gate — <b>no production changes were made</b>.
+              {applyFailed ? (
+                <>The apply failed <b>after it began writing the target</b> — the change may be partially applied, so it may need <b>manual reconciliation</b>.</>
+              ) : (
+                <>The analysis pipeline failed before reaching the gate — <b>no production changes were made</b>.</>
+              )}
             </div>
-            {failureDetail && (
+            {failureDetail?.detail && (
               <div
                 className="mono"
                 style={{ marginTop: 7, fontSize: 11.5, color: "var(--danger)", background: "var(--panel-2)", border: "1px solid var(--line)", borderRadius: 8, padding: "7px 10px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}
               >
-                {failureDetail}
+                {failureDetail.detail}
               </div>
             )}
             <div style={{ marginTop: 7, fontSize: 12, color: "var(--text-dim)" }}>
-              Fix the cause (target/shadow connectivity, <span className="mono">pg_dump</span>, the model, or the SQL), then retry.
-              The full trail is on the <Link href="/audit" style={{ color: "var(--cyan)" }}>audit log</Link>.
+              {applyFailed ? (
+                <>Inspect the target and the <Link href="/audit" style={{ color: "var(--cyan)" }}>audit log</Link> before re-running — a blind retry is not safe once the apply has started.</>
+              ) : (
+                <>Fix the cause (target/shadow connectivity, <span className="mono">pg_dump</span>, the model, or the SQL), then retry.
+                The full trail is on the <Link href="/audit" style={{ color: "var(--cyan)" }}>audit log</Link>.</>
+              )}
             </div>
           </div>
-          <RetryButton requestId={r.id} />
+          {/* No retry affordance for an apply-stage failure — retryRequest refuses it,
+              and the remedy is reconciliation, not re-analysis. */}
+          {!applyFailed && <RetryButton requestId={r.id} />}
         </div>
       )}
 

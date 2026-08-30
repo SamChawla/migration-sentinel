@@ -1513,18 +1513,22 @@ export async function countAuditEvents(): Promise<number> {
   return row?.count ?? 0;
 }
 
-/** The most recent failure detail for a request — surfaced on the failed banner so
- *  the operator sees WHY the pipeline failed (pg_dump/shadow connectivity, the SQL,
- *  the model, …), not just that it did. Matches the *.failed audit actions the
- *  pipeline/apply write (pipeline.failed, apply.failed, github.link_failed). */
-export async function getLatestFailureDetail(requestId: string): Promise<string | null> {
+/** The most recent failure event for a request — surfaced on the failed banner so
+ *  the operator sees WHY it failed (pg_dump/shadow connectivity, the SQL, the model,
+ *  …), not just that it did. Returns the ACTION too, because the banner must speak
+ *  differently for a pre-gate analysis failure (nothing applied — safe to retry) vs
+ *  an `apply.failed` (the target may be partially changed — needs reconciliation,
+ *  NOT a blind retry). Matches every *.failed audit action. */
+export async function getLatestFailureDetail(
+  requestId: string,
+): Promise<{ action: string; detail: string | null } | null> {
   const rows = await db
-    .select({ detail: auditEvent.detail })
+    .select({ action: auditEvent.action, detail: auditEvent.detail })
     .from(auditEvent)
     .where(and(eq(auditEvent.migrationRequestId, requestId), ilike(auditEvent.action, "%failed%")))
     .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
     .limit(1);
-  return rows[0]?.detail ?? null;
+  return rows[0] ?? null;
 }
 
 /** Audit events for ONE request, filtered in SQL and bounded — used by the live
