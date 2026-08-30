@@ -1,80 +1,130 @@
 /**
  * Pre-recorded migration run for Demo mode (/demo).
  *
- * Replays a real end-to-end run of the `drop_legacy_notes` fixture step by step
- * with NO live agent / model / database. This is the fallback for a live demo:
- * if TrueForge, the network, or the model misbehaves, the story still lands.
+ * Replays the v2 pipeline end-to-end: GitHub PR intake → staging dry-run →
+ * staging apply → promotion to prod → prod dry-run → approval gate →
+ * export PR → merge-verified release.
  *
- * Each step is one stage of the pipeline (05-App-Flow). The /demo page advances
- * through them (auto-play or manual).
+ * Each step is one stage of the pipeline. The /demo page advances through them
+ * (auto-play or manual). NO live agent / model / database needed.
  */
 export interface DemoStep {
   phase: string;
   status: string;
   title: string;
   detail: string;
-  /** optional payload rendered when present */
+  env?: "staging" | "prod";
   up?: string;
   down?: string;
   qodo?: { verdict: string; findings: string[] };
   blast?: { overallSeverity: "green" | "amber" | "red"; rowsAffected: number; estLockMs: number; rollbackVerified: boolean; findings: { severity: "green" | "amber" | "red"; note: string; lockType?: string }[] };
   gate?: { requiresTypedConfirm: boolean; confirmWord?: string };
+  prInfo?: { repo: string; prNumber: number; file: string; title: string };
+  promotion?: { from: string; to: string };
+  exportPr?: { repo: string; branch: string; prNumber: number; state: string };
 }
 
 export const DEMO_STEPS: DemoStep[] = [
+  // ── Phase 1: GitHub PR Intake ──────────────────────────────────────────
   {
-    phase: "Intake",
+    phase: "PR Intake",
     status: "received",
-    title: "Developer submits an intent",
-    detail: '"Drop the legacy_notes column from the users table — we stopped using it."',
+    title: "Migration arrives via GitHub PR",
+    detail: "A developer opens a pull request adding a migration file. Sentinel detects it, extracts the SQL, and starts the pipeline — no manual submission needed.",
+    prInfo: { repo: "acme/orders-api", prNumber: 42, file: "migrations/0005_idx_orders_status.sql", title: "Add status index for order dashboards" },
+    up: "CREATE INDEX CONCURRENTLY idx_orders_status\n  ON public.orders (status);",
+    down: "DROP INDEX CONCURRENTLY IF EXISTS idx_orders_status;",
   },
+  // ── Phase 2: Staging Dry-run ───────────────────────────────────────────
   {
-    phase: "Generate",
-    status: "generating",
-    title: "Agent reads the schema (read-only) and writes up + down",
-    detail: "The agent proposes a paired migration. It flags up-front that the down cannot restore data.",
-    up: "ALTER TABLE public.users DROP COLUMN legacy_notes;",
-    down: "-- NO CLEAN ROLLBACK\nALTER TABLE public.users ADD COLUMN legacy_notes text;\n-- prior values are NOT recoverable",
-  },
-  {
-    phase: "Review",
-    status: "reviewing",
-    title: "Qodo reviews the generated SQL",
-    detail: "Advisory review; findings shown at the gate.",
-    qodo: { verdict: "passed_with_warnings", findings: ["Consider a two-phase drop: stop writing this release, drop the next."] },
-  },
-  {
-    phase: "Dry-run",
+    phase: "Staging Dry-run",
     status: "dry_running",
-    title: "Shadow dry-run + blast radius",
-    detail: "Schema-only shadow: the SCHEMA restores, but DROP COLUMN destroys data no down can recover — rollback is NOT proven (irreversible). Row/lock estimates come from the target's planner statistics (no data copied).",
+    title: "Shadow dry-run on staging",
+    detail: "Sentinel provisions a schema-only shadow of the staging database, applies up → down, and verifies the rollback restores the schema. Blast radius is computed from the planner statistics.",
+    env: "staging",
     blast: {
-      overallSeverity: "red",
-      rowsAffected: 1204338,
-      estLockMs: 14000,
-      rollbackVerified: false,
+      overallSeverity: "green",
+      rowsAffected: 0,
+      estLockMs: 8,
+      rollbackVerified: true,
       findings: [
-        { severity: "red", note: "Drops a column — column data is unrecoverable.", lockType: "AccessExclusiveLock" },
+        { severity: "green", note: "Non-blocking CONCURRENTLY build — no table lock." },
       ],
     },
   },
+  // ── Phase 3: Qodo Review ───────────────────────────────────────────────
   {
-    phase: "Gate",
+    phase: "Code Review",
+    status: "reviewing",
+    title: "Qodo reviews the migration SQL",
+    detail: "Automated code review validates syntax, patterns, and risks. Findings travel with the migration through the promotion ladder.",
+    qodo: { verdict: "passed", findings: [] },
+  },
+  // ── Phase 4: Staging Gate + Apply ──────────────────────────────────────
+  {
+    phase: "Staging Apply",
+    status: "applied",
+    title: "GREEN verdict — auto-applied on staging",
+    detail: "Green severity + rollback proven → the staging gate opens automatically. Applied with lock_timeout=3s, statement_timeout=30s. Audit event recorded.",
+    env: "staging",
+  },
+  // ── Phase 5: Promotion ─────────────────────────────────────────────────
+  {
+    phase: "Promote",
+    status: "promoted",
+    title: "Promoted: staging → prod",
+    detail: "Staging run succeeded and rollback was proven. The migration is promoted to the production environment — same SQL, higher gate. The promotion rail is now unlocked.",
+    env: "prod",
+    promotion: { from: "staging", to: "prod" },
+  },
+  // ── Phase 6: Prod Dry-run ──────────────────────────────────────────────
+  {
+    phase: "Prod Dry-run",
+    status: "dry_running",
+    title: "Shadow dry-run on prod schema",
+    detail: "A fresh shadow of the production schema is provisioned. The same up → down cycle runs. Blast radius is re-computed against prod statistics — row counts and locks may differ from staging.",
+    env: "prod",
+    blast: {
+      overallSeverity: "green",
+      rowsAffected: 0,
+      estLockMs: 12,
+      rollbackVerified: true,
+      findings: [
+        { severity: "green", note: "Non-blocking CONCURRENTLY build — no table lock." },
+      ],
+    },
+  },
+  // ── Phase 7: Prod Approval Gate ────────────────────────────────────────
+  {
+    phase: "Approval Gate",
     status: "awaiting_approval",
-    title: "⏸ Agent paused — human gate open",
-    detail: "The apply_migration tool is approval-required. The turn is paused. Nothing has touched production.",
-    gate: { requiresTypedConfirm: true, confirmWord: "users" },
+    title: "Gate 1 — human approval required for prod",
+    detail: "Even GREEN migrations pause at the prod gate. The agent is paused — no production changes have been made. An operator reviews the blast report, findings, and promotion history before deciding.",
+    env: "prod",
   },
+  // ── Phase 8: Approved ──────────────────────────────────────────────────
   {
-    phase: "Decision",
+    phase: "Approved",
     status: "approved",
-    title: "Approver types “users” and approves",
-    detail: "The control plane records an approved, audited decision, then resumes the paused turn (user.tool_approval → allow).",
+    title: "Operator approves the prod migration",
+    detail: "The approval is audited. For production targets with a linked repository, the migration flows to the export gate instead of applying directly — no out-of-band changes to the source of truth.",
+    env: "prod",
   },
+  // ── Phase 9: Export PR ─────────────────────────────────────────────────
+  {
+    phase: "Export Gate",
+    status: "awaiting_merge",
+    title: "Gate 2 — export PR opened on the source repo",
+    detail: "Sentinel opens a pull request on acme/orders-api with the approved migration SQL. The migration is NOT applied yet — it waits for the PR to be merged, keeping the repository as the source of truth.",
+    env: "prod",
+    exportPr: { repo: "acme/orders-api", branch: "sentinel/migration-0005", prNumber: 43, state: "open" },
+  },
+  // ── Phase 10: Merge-verified Apply ─────────────────────────────────────
   {
     phase: "Apply",
     status: "applied",
-    title: "Guarded apply → done",
-    detail: "Applied inside a transaction with lock_timeout + statement_timeout; audit event written. One-click rollback available (schema only).",
+    title: "PR merged → guarded apply on prod",
+    detail: "The export PR is merged. Sentinel verifies the merge, applies the migration with lock_timeout=3s and statement_timeout=30s, and writes the audit trail. The full provenance chain is preserved: PR intake → staging → promotion → approval → export PR → merge → apply.",
+    env: "prod",
   },
 ];

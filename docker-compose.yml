@@ -1,8 +1,13 @@
 # Local dev stack for Migration Sentinel.
 #   docker compose up -d
-# Three separate Postgres roles (see .env.example):
+#   → databases start, target & staging auto-seed via init script,
+#     db-setup waits for sentinel-db then runs drizzle migrate + control-plane seed.
+#
+# Four Postgres roles (see .env.example):
 #   - sentinel-db : our own control-plane state
-#   - target-db   : the demo "prod" DB the agent migrates (seed with pnpm db:seed)
+#   - target-db   : the demo "prod" DB the agent migrates
+#   - staging-db  : the lower-env "staging" DB the promotion ladder applies to
+#                   FIRST (prod stays locked until the same SQL applies here).
 #   - shadow-db   : ephemeral clones are created/dropped here during dry-runs
 #
 # The TrueForge server runs separately via `npx @truefoundry/trueforge`
@@ -15,8 +20,13 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: sentinel
-    ports: ["5435:5432"]   # host 5432 is taken by a local Windows Postgres service
+    ports: ["5435:5432"]
     volumes: ["sentinel_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
   target-db:
     image: postgres:16
@@ -25,24 +35,78 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: prod
     ports: ["5433:5432"]
-    volumes: ["target_data:/var/lib/postgresql/data"]
+    volumes:
+      - target_data:/var/lib/postgresql/data
+      - ./fixtures/target_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  staging-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: staging
+    ports: ["5436:5432"]
+    volumes:
+      - staging_data:/var/lib/postgresql/data
+      - ./fixtures/target_schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
 
   shadow-db:
     image: postgres:16
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      # Creates the `shadow` database used by SHADOW_DATABASE_URL (rollback
-      # integration tests). The default `postgres` maintenance DB still exists
-      # and backs SHADOW_ADMIN_URL, which CREATE/DROPs the ephemeral clones.
       POSTGRES_DB: shadow
     ports: ["5434:5432"]
-    # Ephemeral by design: mount PGDATA as tmpfs so every start is a FRESH init.
-    # (The postgres image keeps an anonymous volume across recreation, which
-    # would skip init and leave POSTGRES_DB=shadow uncreated for existing stacks.)
     tmpfs:
       - /var/lib/postgresql/data
+
+  db-setup:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    depends_on:
+      sentinel-db:
+        condition: service_healthy
+      target-db:
+        condition: service_healthy
+      staging-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@sentinel-db:5432/sentinel
+      TARGET_DB_URL: postgres://postgres:postgres@target-db:5432/prod
+      STAGING_DB_URL: postgres://postgres:postgres@staging-db:5432/staging
+      SHADOW_ADMIN_URL: postgres://postgres:postgres@shadow-db:5432/postgres
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "→ Installing pnpm…"
+        npm install -g pnpm@9 --silent 2>/dev/null
+        echo "→ Installing dependencies…"
+        pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tail -1
+        echo "→ Running drizzle migrate (sentinel-db schema)…"
+        pnpm db:migrate
+        echo "→ Seeding sentinel control-plane…"
+        pnpm db:seed:sentinel --reset
+        echo ""
+        echo "✓ All databases ready and seeded."
+        echo "  target-db  (prod)    — auto-seeded via init script (50k users, ~130k orders)"
+        echo "  staging-db (staging) — auto-seeded via init script (same schema)"
+        echo "  sentinel-db          — drizzle migrated + demo migrations seeded"
+        echo "  shadow-db            — ephemeral, clean on every start"
 
 volumes:
   sentinel_data:
   target_data:
+  staging_data:

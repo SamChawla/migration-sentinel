@@ -45,8 +45,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         error: "No registered connection (with a URL) exists for the next environment — add one in Settings.",
         status: 409,
       },
+      already_promoted: { error: "This migration has already been promoted to the next environment.", status: 409 },
     };
-    const m = messages[promoted.reason];
+    const m = messages[promoted.reason] ?? { error: promoted.reason, status: 500 };
     return NextResponse.json({ error: m.error, code: promoted.reason }, { status: m.status });
   }
 

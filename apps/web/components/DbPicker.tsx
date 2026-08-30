@@ -119,7 +119,7 @@ export function DbPicker({ value, onChange }: { value: string; onChange: (alias:
       {open && (
         <div
           className="glass"
-          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, padding: 8, boxShadow: "var(--shadow-md)" }}
+          style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 50, padding: 8, boxShadow: "var(--shadow-lg)", background: "#fff" }}
         >
           {!adding ? (
             <>

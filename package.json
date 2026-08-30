@@ -16,6 +16,7 @@
     "db:migrate": "pnpm --filter @sentinel/db migrate",
     "db:seed": "tsx scripts/seed.ts",
     "db:seed:sentinel": "tsx scripts/seed-sentinel.ts",
+    "db:setup": "pnpm db:migrate && pnpm db:seed -- --reset && pnpm db:seed:sentinel -- --reset",
     "spike": "tsx packages/agent/src/spike.ts",
     "spike:sandbox": "tsx packages/agent/src/spike-sandbox.ts",
     "test": "vitest run",

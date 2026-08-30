@@ -88,27 +88,14 @@ export function Walkthrough() {
   const step = STEPS[idx];
   const last = idx === STEPS.length - 1;
 
-  // Auto-open ONCE per browser session on the dashboard (where the anchored
-  // elements exist). It does not re-open on ordinary navigation back within a
-  // session. `openedThisLoad` (module scope) is an in-memory fallback so that if
-  // sessionStorage is unavailable (private mode), the tour still opens at most
-  // once per page load instead of on every dashboard mount.
+  // Auto-open ONCE per page load on the dashboard (where the anchored elements
+  // exist). Uses an in-memory flag so a hard reload resets it — the tour plays
+  // again for each new browser load, but not on client-side navigation within
+  // the same session.
   useEffect(() => {
     if (pathname !== "/dashboard") return;
     if (openedThisLoad) return;
-    let seen = false;
-    try {
-      seen = sessionStorage.getItem("ms_tour_seen") === "1";
-    } catch {
-      seen = openedThisLoad; // storage blocked → rely on the in-memory guard
-    }
-    if (seen) return;
     openedThisLoad = true;
-    try {
-      sessionStorage.setItem("ms_tour_seen", "1");
-    } catch {
-      /* in-memory guard already prevents a re-open this load */
-    }
     setIdx(0);
     setOpen(true);
   }, [pathname]);

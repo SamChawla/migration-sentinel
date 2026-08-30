@@ -12,9 +12,15 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
   const session = await getSession();
   if (!session) redirect("/login");
 
-  const stats = await getDashboardStats();
+  let pending = 0;
+  try {
+    const stats = await getDashboardStats();
+    pending = stats.awaiting;
+  } catch {
+    // DB unreachable — render shell with zero counts
+  }
   return (
-    <DeckShell pendingCount={stats.awaiting} userName={session.user}>
+    <DeckShell pendingCount={pending} userName={session.user}>
       {children}
     </DeckShell>
   );

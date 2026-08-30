@@ -47,10 +47,9 @@ export default function About() {
 
       {/* ── TRUEFORGE ── */}
       <div className="ed-section-alt">
-        <div className="ed-section-inner" style={{ textAlign: "center", maxWidth: 720, margin: "0 auto" }}>
-          <span className="ed-tag">Powered by TrueForge</span>
-          <h2 style={{ marginTop: 16 }}>The agent runs on TrueForge</h2>
-          <p style={{ fontSize: 15, color: "var(--ink-2)", lineHeight: 1.8, marginTop: 12 }}>
+        <div className="ed-section-inner">
+          <h2>The agent runs on TrueForge</h2>
+          <p className="ed-sub">
             Migration Sentinel is built on the <strong style={{ color: "var(--ink)" }}>TrueForge</strong> agent harness —
             sessions, streaming turns, and a first-class <strong style={{ color: "var(--ink)" }}>tool-approval</strong> loop.
             That loop <em>is</em> our human gate: the <code style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--coral)" }}>apply_migration</code> tool
