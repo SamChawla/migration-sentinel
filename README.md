@@ -1,6 +1,8 @@
-# 🛡️ Migration Sentinel
+<p align="center">
+  <img src="apps/web/public/brand/logo-full.png" alt="Migration Sentinel — prove every migration before it touches production" width="480">
+</p>
 
-**An AI agent that plans, dry-runs, and applies PostgreSQL schema migrations — and physically stops for a human before anything irreversible.**
+<p align="center"><b>An AI agent that plans, dry-runs, and applies PostgreSQL schema migrations — and physically stops for a human before anything irreversible.</b></p>
 
 [![CI](https://github.com/SamChawla/migration-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/SamChawla/migration-sentinel/actions/workflows/ci.yml)
 ![Coverage](https://img.shields.io/badge/coverage-68%25%20lines%20%C2%B7%2088%25%20branches-yellowgreen)
