@@ -296,6 +296,7 @@ pnpm typecheck                       # packages + web app
 ## Tests, CI & coverage
 
 ```bash
+pnpm lint            # ESLint — correctness rules (dead code, real bugs), not formatting
 pnpm test            # 234 passing (Vitest; 8 live-DB tests self-skip without a shadow URL)
 pnpm test:coverage   # v8 coverage over the deterministic safety core
 pnpm typecheck       # tsc --noEmit over packages + the Next.js app
@@ -331,8 +332,10 @@ real databases), not by unit tests.
 
 **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push/PR:
 it provisions three Postgres 16 services mirroring `docker-compose`, then runs
-`pnpm typecheck` and `pnpm test:coverage` — so the **live rollback + provisioning
-tests actually run in CI**, not self-skip.
+`pnpm lint`, `pnpm typecheck` and `pnpm test:coverage` — so the **live rollback +
+provisioning tests actually run in CI**, not self-skip.
+
+Contributing (PR-first, Qodo-reviewed workflow): see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Project structure
 

@@ -66,6 +66,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Lint (ESLint — correctness)
+        run: pnpm lint
+
       - name: Typecheck (packages + web)
         run: pnpm typecheck
 

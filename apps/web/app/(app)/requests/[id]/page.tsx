@@ -122,9 +122,7 @@ function db3dModel(upSql: string): SqlModel {
 
   const table = parsed ? `${schema}.${parsed}` : UNPARSED_TABLE;
   const isCreate = /\bcreate\s+table\b/.test(sql);
-  let columns: SceneCol[] = [];
-  const tint = (affected: Affected, severity: Sev, opLabel: string): SceneCol[] =>
-    columns.map((c) => ({ ...c, affected, severity, opLabel }));
+  const columns: SceneCol[] = [];
 
   if (isCreate) {
     const colBlock = sql.match(/\(([\s\S]+)\)/)?.[1] ?? "";
@@ -385,8 +383,8 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
       >
         <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--cyan)", boxShadow: "var(--glow-cyan)", flexShrink: 0 }} />
         <span>
-          Runs on <b style={{ color: "var(--cyan)" }}>TrueForge</b> — the agent turn generates the migration, then{" "}
-          <b style={{ color: "var(--text-dim)" }}>blast · rollback · qodo · pre-flight</b> run as parallel sub-agents. This console is the approval cockpit built on its SDK.
+          Runs on <b style={{ color: "var(--cyan)" }}>TrueForge</b> — the agent turn generates the migration, then the deterministic safety core runs{" "}
+          <b style={{ color: "var(--text-dim)" }}>blast · rollback · qodo · pre-flight</b> before <b style={{ color: "var(--cyan)" }}>TrueForge</b> pauses the agent at the apply-approval gate. This console is the approval cockpit built on its SDK.
         </span>
       </div>
 
