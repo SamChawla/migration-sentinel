@@ -8,6 +8,7 @@ import {
 import { buildVerdictComment } from "@sentinel/core";
 import { createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
+import { publicBaseUrl } from "@/lib/base-url";
 
 export const runtime = "nodejs";
 
@@ -44,10 +45,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   // The verdict comment is read by people on a PUBLIC PR, so the console link
-  // must be a reachable base URL — not the server's own origin, which is
-  // http://localhost:3000 in dev and an internal host behind a proxy. Prefer the
-  // configured APP_BASE_URL; fall back to the request origin for local use.
-  const baseUrl = process.env.APP_BASE_URL?.trim().replace(/\/+$/, "") || new URL(req.url).origin;
+  // must be a reachable base URL — see publicBaseUrl.
+  const baseUrl = publicBaseUrl(req);
 
   const body = buildVerdictComment({
     requestId: rec.id,

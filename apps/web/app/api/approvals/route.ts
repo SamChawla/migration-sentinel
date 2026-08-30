@@ -27,6 +27,7 @@ import {
   exportMigrationPr,
 } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
+import { publicBaseUrl } from "@/lib/base-url";
 
 export const runtime = "nodejs";
 
@@ -263,7 +264,7 @@ export async function POST(req: Request) {
             rowsAffected: rec.rowsAffected,
             findings: rec.findings.map((f) => ({ statement: f.statement, severity: f.severity, note: f.note })),
             qodo: { verdict: rec.qodoVerdict, findings: rec.qodoFindings },
-            consoleUrl: `${new URL(req.url).origin}/requests/${rec.id}`,
+            consoleUrl: `${publicBaseUrl(req)}/requests/${rec.id}`,
           });
           const exported = await exportMigrationPr(gh, {
             repo: ghLink.repo,
