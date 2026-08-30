@@ -291,7 +291,12 @@ function fallbackScene(model: SqlModel): { tables: SceneTable[]; edges: FkEdge[]
 
 export default async function ApprovalConsole({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const r = await getRequest(id);
+  let r: Awaited<ReturnType<typeof getRequest>>;
+  try {
+    r = await getRequest(id);
+  } catch {
+    notFound();
+  }
   if (!r) notFound();
 
   // Deterministic gate policy (ADR-004) — derived from the SQL of record, not
@@ -315,9 +320,9 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
   // Promotion rail state: the group's per-env runs + the prod lock verdict,
   // computed with the SAME promotionEligible the server enforces.
   const [promotionGroup, guardCtx, githubLink] = await Promise.all([
-    getPromotionGroup(r.promotionGroupId),
-    getApplyGuardContext(r.id),
-    getGithubLink(r.id),
+    getPromotionGroup(r.promotionGroupId).catch(() => null),
+    getApplyGuardContext(r.id).catch(() => null),
+    getGithubLink(r.id).catch(() => null),
   ]);
   const prodLocked =
     r.environment === "prod" &&
@@ -423,7 +428,7 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         environment={r.environment}
         status={r.status}
         prodLocked={prodLocked}
-        runs={promotionGroup.map((g) => ({
+        runs={(promotionGroup ?? []).map((g) => ({
           requestId: g.requestId,
           environment: g.environment,
           status: g.status,

@@ -19,11 +19,21 @@ export default async function Migrations({
   const dir: "asc" | "desc" = dirParam === "asc" ? "asc" : "desc";
   // Filter + sort + count SERVER-SIDE so they apply across ALL pages and the
   // total is the filtered total (not "everything, then hide 45 client-side").
-  const total = await countRequests({ q, status: filter });
+  let total: number;
+  let requests: Awaited<ReturnType<typeof listRequests>>;
+  try {
+    total = await countRequests({ q, status: filter });
+    const pageCount_ = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const page_ = Math.min(Math.max(parseInt(pageParam ?? "1", 10) || 1, 1), pageCount_);
+    const offset_ = (page_ - 1) * PAGE_SIZE;
+    requests = await listRequests({ limit: PAGE_SIZE, offset: offset_, q, status: filter, sort, dir });
+  } catch {
+    total = 0;
+    requests = [];
+  }
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.min(Math.max(parseInt(pageParam ?? "1", 10) || 1, 1), pageCount);
   const offset = (page - 1) * PAGE_SIZE;
-  const requests = await listRequests({ limit: PAGE_SIZE, offset, q, status: filter, sort, dir });
 
   const pageHref = (p: number) => {
     const sp = new URLSearchParams();

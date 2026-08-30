@@ -1,0 +1,37 @@
+# Zerops project import — paste into "Import project" in the Zerops GUI (or
+# `zcli project project-import`). Creates the PostgreSQL server + the Node.js
+# runtime the console deploys to. The service hostnames (`db`, `app`) must match
+# the ${db_*} references and `setup: app` in zerops.yml.
+project:
+  name: migration-sentinel
+  # Keep DB + app in the same project so they share the private network and the
+  # ${db_*} env references resolve.
+  tags:
+    - migration-sentinel
+
+services:
+  # ── PostgreSQL: ONE server hosting sentinel/prod/staging/shadow databases.
+  # NON_HA is the free-friendly single-container mode; switch to HA for prod.
+  # The service exposes a `postgres` superUser — that is what lets the shadow
+  # role CREATE/DROP the ephemeral dry-run clones.
+  - hostname: db
+    type: postgresql@16
+    mode: NON_HA
+
+  # ── Node.js runtime for the Next.js console. buildFromGit lets Zerops build
+  # straight from the repo; omit it to push builds with `zcli push` instead.
+  - hostname: app
+    type: nodejs@22
+    enableSubdomainAccess: true
+    # buildFromGit: https://github.com/<you>/migration-sentinel@main
+    minContainers: 1
+    maxContainers: 1
+    envSecrets:
+      # Placeholders — set the real values in the GUI (Service → Env variables →
+      # Secret). Referenced by zerops.yml run.envVariables.
+      APPROVER_TOKEN: change-me
+      ANTHROPIC_API_KEY: sk-ant-...
+      TRUEFORGE_BASE_URL: http://localhost:8790
+      EURON_API_KEY: ""
+      EURON_BASE_URL: https://api.euron.one/api/v1/euri
+      EURON_MODEL: gpt-4.1-nano

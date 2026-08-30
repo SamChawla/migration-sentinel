@@ -19,7 +19,7 @@
   --sans:       var(--font-dm-sans, 'DM Sans'), system-ui, sans-serif;
   --mono:       var(--font-ibm, 'IBM Plex Mono'), 'Menlo', monospace;
   --col-narrow: min(640px, 90vw);
-  --col-wide:   min(1120px, 90vw);
+  --col-wide:   min(1440px, 92vw);
 
   font-family: var(--sans);
   background: var(--bg);
@@ -106,11 +106,11 @@
   margin: 0 auto;
   padding: 88px 32px 80px;
   display: grid;
-  grid-template-columns: 1fr 420px;
-  gap: 64px;
-  align-items: end;
+  grid-template-columns: 1fr 440px;
+  gap: 72px;
+  align-items: start;
 }
-.hero-main { max-width: 600px; }
+.hero-main { }
 .hero-context {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -173,7 +173,6 @@
   border-radius: 10px;
   overflow: hidden;
   align-self: start;
-  margin-top: 48px;
 }
 .hero-card + .hero-card { margin-top: 8px; }
 .hero-card-header {
@@ -246,7 +245,7 @@
 .blocked-caption {
   font-size: 14px;
   color: var(--ink-3);
-  max-width: 420px;
+  max-width: 560px;
   margin: 0 auto;
   line-height: 1.7;
 }
@@ -279,7 +278,7 @@
 }
 .pipeline-steps {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
@@ -290,6 +289,8 @@
   border-right: 1px solid var(--border);
   position: relative;
 }
+.p-step:nth-child(5n) { border-right: none; }
+.p-step:nth-child(n+6) { border-top: 1px solid var(--border); }
 .p-step:last-child { border-right: none; }
 .p-step-num {
   font-family: var(--mono); font-size: 11px; font-weight: 500;
@@ -329,12 +330,18 @@
   padding: 96px max(32px, 5vw);
 }
 .cap-inner { max-width: var(--col-wide); margin: 0 auto; }
-.cap-header { margin-bottom: 64px; max-width: 560px; }
+.cap-header {
+  margin-bottom: 64px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 64px;
+  align-items: end;
+}
 .cap-header h2 {
   font-family: var(--serif);
   font-size: 36px; font-weight: 400;
   line-height: 1.15; letter-spacing: -0.02em;
-  margin-bottom: 16px;
+  margin-bottom: 0;
 }
 .cap-header p { font-size: 15px; color: var(--ink-2); line-height: 1.7; }
 .cap-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0; }
@@ -454,12 +461,18 @@
   padding: 96px max(32px, 5vw);
 }
 .comparison-inner { max-width: var(--col-wide); margin: 0 auto; }
-.comparison-header { margin-bottom: 48px; max-width: 600px; }
+.comparison-header {
+  margin-bottom: 48px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 64px;
+  align-items: end;
+}
 .comparison-header h2 {
   font-family: var(--serif);
   font-size: 36px; font-weight: 400;
   line-height: 1.15; letter-spacing: -0.02em;
-  margin-bottom: 16px;
+  margin-bottom: 0;
 }
 .comparison-header p { font-size: 15px; color: var(--ink-2); line-height: 1.7; }
 /* Contain the table's intrinsic width at EVERY viewport — seven non-wrapping
@@ -601,8 +614,13 @@
   max-width: var(--col-wide);
   margin: 0 auto;
   padding: 80px 32px 56px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 64px;
+  align-items: end;
 }
 .ed-page-header .ed-tag {
+  grid-column: 1 / -1;
   display: inline-block;
   font-family: var(--mono);
   font-size: 11px;
@@ -619,7 +637,7 @@
   line-height: 1.1;
   letter-spacing: -0.025em;
   color: var(--ink);
-  margin-bottom: 20px;
+  margin-bottom: 0;
 }
 .ed-page-header h1 em {
   font-style: italic;
@@ -629,7 +647,7 @@
   font-size: 16px;
   color: var(--ink-2);
   line-height: 1.7;
-  max-width: 640px;
+  max-width: none;
 }
 
 /* ─── EDITORIAL SECTION ─── */
@@ -637,7 +655,13 @@
   max-width: var(--col-wide);
   margin: 0 auto;
   padding: 64px 32px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 64px;
 }
+.ed-section > h2 { grid-column: 1; grid-row: 1; }
+.ed-section > .ed-sub { grid-column: 2; grid-row: 1; align-self: end; }
+.ed-section > *:not(h2):not(.ed-sub) { grid-column: 1 / -1; }
 .ed-section-alt {
   background: var(--white);
   border-top: 1px solid var(--border);
@@ -647,15 +671,14 @@
 .ed-section-alt > .ed-section-inner {
   max-width: var(--col-wide);
   margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 64px;
 }
-.ed-section h2 {
-  font-family: var(--serif);
-  font-size: 32px;
-  font-weight: 400;
-  line-height: 1.15;
-  letter-spacing: -0.02em;
-  margin-bottom: 12px;
-}
+.ed-section-inner > h2 { grid-column: 1; grid-row: 1; }
+.ed-section-inner > .ed-sub { grid-column: 2; grid-row: 1; align-self: end; }
+.ed-section-inner > *:not(h2):not(.ed-sub) { grid-column: 1 / -1; }
+.ed-section h2,
 .ed-section-alt h2 {
   font-family: var(--serif);
   font-size: 32px;
@@ -669,7 +692,7 @@
   font-size: 15px;
   color: var(--ink-2);
   line-height: 1.7;
-  max-width: 600px;
+  max-width: none;
   margin-bottom: 40px;
 }
 
@@ -1041,9 +1064,17 @@
 @media (max-width: 1024px) {
   .ed-hero { grid-template-columns: 1fr; padding: 80px 32px 64px; }
   .hero-card { max-width: 420px; }
+  .ed-page-header { grid-template-columns: 1fr; }
+  .ed-section { grid-template-columns: 1fr; }
+  .ed-section > .ed-sub { grid-column: 1; grid-row: auto; }
+  .ed-section-inner { grid-template-columns: 1fr !important; }
+  .ed-section-inner > .ed-sub { grid-column: 1 !important; grid-row: auto !important; }
+  .cap-header { grid-template-columns: 1fr; }
+  .comparison-header { grid-template-columns: 1fr; }
   .pipeline-header { grid-template-columns: 1fr; gap: 16px; }
   .pipeline-steps { grid-template-columns: repeat(4, 1fr); }
-  .pipeline-steps .p-step:nth-child(4) { border-right: none; }
+  .p-step:nth-child(5n) { border-right: 1px solid var(--border); }
+  .pipeline-steps .p-step:nth-child(4n) { border-right: none; }
   .pipeline-steps .p-step:nth-child(n+5) { border-top: 1px solid var(--border); }
   .cap-list { grid-template-columns: 1fr; }
   .cap-item { padding-right: 0 !important; padding-left: 0 !important; border-right: none !important; }
@@ -1062,9 +1093,6 @@
   .ed-pricing-card { border-right: none; border-bottom: 1px solid var(--border); }
   .ed-pricing-card:last-child { border-bottom: none; }
   .ed-stack-grid { grid-template-columns: repeat(2, 1fr); }
-  /* Re-derive the separators for two columns: undo the desktop 3-col rules
-     (item 3 keeps its right divider; only the final row — items 5,6 — drops
-     its bottom border). Order matters: the restores precede the removals. */
   .ed-stack-item:nth-child(3n) { border-right: 1px solid var(--border); }
   .ed-stack-item:nth-child(2n) { border-right: none; }
   .ed-stack-item:nth-child(n+4) { border-bottom: 1px solid var(--border); }

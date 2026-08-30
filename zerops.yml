@@ -1,0 +1,66 @@
+# Zerops build & deploy pipeline for the Migration Sentinel web console.
+# The `app` service name here must match the hostname of the Node.js service in
+# your Zerops project (see zerops-project-import.yml). Full guide: docs/DEPLOY_ZEROPS.md
+zerops:
+  - setup: app
+    build:
+      base: nodejs@22
+      # Corepack ships with Node — pin the repo's pnpm and do a frozen install,
+      # then build only the web app (its workspace deps build transitively).
+      prepareCommands:
+        - corepack enable
+        - corepack prepare pnpm@9.12.0 --activate
+      buildCommands:
+        - pnpm install --frozen-lockfile
+        - pnpm --filter @sentinel/web build
+      # Monorepo with pnpm workspace symlinks + Next `transpilePackages` reading
+      # raw .ts from packages/*: ship the whole tree so the relative symlinks and
+      # the control-plane migrations/seeds survive into the runtime container.
+      deployFiles:
+        - apps
+        - packages
+        - scripts
+        - fixtures
+        - node_modules
+        - package.json
+        - pnpm-workspace.yaml
+        - pnpm-lock.yaml
+        - tsconfig.base.json
+        - tsconfig.json
+      cache:
+        - node_modules
+        - apps/web/.next/cache
+    run:
+      base: nodejs@22
+      ports:
+        - port: 3000
+          httpSupport: true
+      # One-shot per deploy: create the 4 databases on the shared PG server,
+      # migrate the control plane, seed the demo data (idempotent). See the
+      # script header for the env it needs.
+      initCommands:
+        - corepack enable
+        - node scripts/zerops-bootstrap.mjs
+      start: pnpm --filter @sentinel/web start
+      envVariables:
+        NODE_ENV: production
+        PORT: "3000"
+        HOSTNAME: 0.0.0.0
+        # ── Database wiring — uses the PostgreSQL service SUPERUSER so the shadow
+        # role can CREATE/DROP the ephemeral dry-run clones. `db` = the hostname
+        # of your PostgreSQL service; rename both if you named it differently.
+        DATABASE_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/sentinel
+        TARGET_DB_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/prod
+        STAGING_DB_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/staging
+        SHADOW_ADMIN_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/postgres
+        SHADOW_DATABASE_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/shadow
+        # ── App secrets — set the real values in the Zerops GUI (Service → Env
+        # variables) as SECRET vars, not here in the repo.
+        APPROVER_TOKEN: ${APPROVER_TOKEN}
+        ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+        # TrueForge (NL→SQL) is optional; raw-SQL intake needs none.
+        TRUEFORGE_BASE_URL: ${TRUEFORGE_BASE_URL}
+        # Copilot chat (optional, OpenAI-compatible / Euron).
+        EURON_API_KEY: ${EURON_API_KEY}
+        EURON_BASE_URL: ${EURON_BASE_URL}
+        EURON_MODEL: ${EURON_MODEL}

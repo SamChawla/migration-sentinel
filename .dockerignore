@@ -1,0 +1,17 @@
+# Keep the build context small and reproducible — let the image reinstall.
+node_modules
+**/node_modules
+.next
+**/.next
+apps/web/tsconfig.tsbuildinfo
+coverage
+.git
+.env
+.env.*
+!.env.example
+docs
+*.md
+!README.md
+mockup.html
+assets
+fixtures

@@ -7,22 +7,25 @@ const OPEN_ACCESS = ["1", "true", "yes"].includes(
 );
 
 const STEPS = [
-  { n: "1", name: "Intake", desc: "Plain English, SQL, or a PR diff" },
+  { n: "1", name: "Intake", desc: "SQL, intent, or GitHub PR — auto-detected" },
   { n: "2", name: "Generate", desc: "Paired up + down migration" },
   { n: "3", name: "Code review", desc: "Advisory review via Qodo" },
   { n: "4", name: "Shadow dry-run", desc: "Blast radius + rollback proof" },
-  { n: "5", name: "Human gate", desc: "You decide — agent cannot proceed", gate: true },
-  { n: "6", name: "Guarded apply", desc: "Timeouts, txn, auto-rollback" },
-  { n: "7", name: "Audit", desc: "Append-only record" },
+  { n: "5", name: "Staging first", desc: "Apply on staging before prod" },
+  { n: "6", name: "Promote", desc: "Same SQL, higher gate" },
+  { n: "7", name: "Human gate", desc: "Prod approval — agent paused", gate: true },
+  { n: "8", name: "Export PR", desc: "Source-of-truth merge gate" },
+  { n: "9", name: "Guarded apply", desc: "Merge-verified, timeout-protected" },
+  { n: "10", name: "Audit", desc: "Full provenance chain" },
 ];
 
 const CAPABILITIES = [
   { title: "Blast radius before prod", desc: "Shadow dry-run plus your database's own planner statistics: rows affected, lock type, estimated downtime — before anything runs." },
   { title: "Rollback proven, not assumed", desc: "Every migration's down script is executed on a shadow clone and the schema diffed back. If data can't be restored, we say so." },
-  { title: "Human gate, keyed to danger", desc: "Irreversible operations demand typed confirmation. The gate is enforced server-side — the model cannot self-approve." },
-  { title: "Author from intent", desc: "Describe the change in plain English, paste SQL, or point at a GitHub PR. The agent writes a safe up/down pair for you." },
+  { title: "Staging-first promotion", desc: "Migrations apply on staging first. Only after the staging run succeeds and rollback is proven does the prod rail unlock." },
+  { title: "Two-gate prod release", desc: "Gate 1: human approval (typed confirm for irreversible ops). Gate 2: export PR to your repo — apply waits for the merge." },
+  { title: "GitHub PR intake", desc: "Open a PR with a migration file — Sentinel detects it, extracts the SQL, and runs the full pipeline. No manual submission." },
   { title: "Data pre-flight probes", desc: "SET NOT NULL with existing NULLs? We probe the real data read-only, catch the failure before it happens, and regenerate a two-phase migration." },
-  { title: "Near-zero cost", desc: "No production data is ever cloned. Schema-only shadows + read-only catalog stats — the only real cost is a few model calls." },
 ];
 
 type Cell = { cls: string; text: string };
@@ -164,8 +167,8 @@ export default function Landing() {
       {/* ── PIPELINE ── */}
       <section className="pipeline" id="pipeline">
         <div className="pipeline-header">
-          <h2>One migration, seven checkpoints.</h2>
-          <p>Every request travels the same path. Nothing skips the gate — the agent is physically paused until you decide.</p>
+          <h2>One migration, ten checkpoints.</h2>
+          <p>Every request travels the same path — staging first, then promotion, then prod with a two-gate system. Nothing skips the gate.</p>
         </div>
         <div className="pipeline-steps">
           {STEPS.map((s) => (
@@ -178,7 +181,7 @@ export default function Landing() {
         </div>
         <p className="pipeline-footnote">
           Think of it this way: <code>alembic</code> is <code>git commit</code>.
-          Migration Sentinel is the CI + code review + {"“"}are you sure?{"”"} gate
+          Migration Sentinel is the CI + code review + staging + approval + merge gate
           that runs before that commit hits production.
         </p>
       </section>

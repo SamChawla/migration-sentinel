@@ -38,14 +38,14 @@ async function probeHttp(url: string | undefined): Promise<boolean> {
 }
 
 export default async function Dashboard() {
+  const fallbackStats: Awaited<ReturnType<typeof getDashboardStats>> = { awaiting: 0, applied: 0, blocked: 0, proven: 0 };
+  const fallbackSev: Awaited<ReturnType<typeof getSeverityDistribution>> = { green: 0, amber: 0, red: 0 };
+
   const [requests, audit, stats, sevDist, connections, targetUp, shadowUp, sentinelUp, trueforgeUp] = await Promise.all([
-    // Only the 5 most recent are rendered below — ask for 5, not the default 50.
-    // Each record is hydrated with several sequential queries, so fetching 50 to
-    // show 5 was ~10x the database work per dashboard load.
-    listRequests({ limit: 5 }),
-    listAuditEvents(),
-    getDashboardStats(),
-    getSeverityDistribution(),
+    listRequests({ limit: 5 }).catch(() => [] as Awaited<ReturnType<typeof listRequests>>),
+    listAuditEvents().catch(() => [] as Awaited<ReturnType<typeof listAuditEvents>>),
+    getDashboardStats().catch(() => fallbackStats),
+    getSeverityDistribution().catch(() => fallbackSev),
     listTargetDatabases().catch(() => []),
     probeDb(process.env.TARGET_DB_URL),
     probeDb(process.env.SHADOW_ADMIN_URL),
@@ -171,9 +171,9 @@ export default async function Dashboard() {
             <div className="health-row"><span className={`pulse-dot-live ${dot(targetUp)}`} /> <span>target-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{targetUp ? ":5433 read-only" : "unreachable"}</span></div>
             <div className="health-row"><span className={`pulse-dot-live ${dot(shadowUp)}`} /> <span>shadow-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{shadowUp ? ":5434 ephemeral" : "unreachable"}</span></div>
             <div className="health-row"><span className={`pulse-dot-live ${dot(sentinelUp)}`} /> <span>sentinel-db</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{sentinelUp ? ":5435 control" : "unreachable"}</span></div>
-            <div className="health-row"><span className={`pulse-dot-live ${dot(trueforgeUp)}`} /> <span>TrueForge</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{trueforgeUp ? "agent harness · live" : "unreachable"}</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${dot(trueforgeUp)}`} /> <span>TrueForge</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{trueforgeUp ? "agent harness · live" : "offline · seed data only"}</span></div>
             <div className="health-row"><span className={`pulse-dot-live ${copilotUp ? "ok" : "off"}`} /> <span>Copilot</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{copilotUp ? "Euron · BYOK" : "configure key"}</span></div>
-            <div className="health-row"><span className="pulse-dot-live off" /> <span>Qodo</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>advisory</span></div>
+            <div className="health-row"><span className={`pulse-dot-live ${process.env.QODO_API_KEY?.trim() ? "ok" : "off"}`} /> <span>Qodo</span> <span className="mono" style={{ marginLeft: "auto", fontSize: 11, color: "var(--faint)" }}>{process.env.QODO_API_KEY?.trim() ? "advisory · live" : "advisory · seed data only"}</span></div>
           </div>
 
           <div className="glass">
