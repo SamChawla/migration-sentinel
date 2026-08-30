@@ -81,7 +81,6 @@ export default function Landing() {
       {/* ── HERO ── */}
       <section className="ed-hero">
         <div className="hero-main">
-          <p className="hero-context">TrueForge Agent Harness Hackathon &middot; WeMakeDevs &times; TrueFoundry</p>
           <h1>The migration agent that <em>pauses before anything irreversible.</em></h1>
           <p className="hero-body">
             Schema migrations are the most dangerous routine operation in software.
