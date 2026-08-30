@@ -7,6 +7,8 @@ import {
   getRequest,
   setRequestStatus,
   insertAuditEvent,
+  findOpenDuplicatePrRequest,
+  DuplicatePrError,
 } from "@sentinel/db/queries";
 import { runAgentPipeline, createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
@@ -79,7 +81,10 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
-    const repo = typeof body.repo === "string" ? body.repo.trim() : "";
+    // GitHub owner/repo names are case-insensitive; normalize to a canonical
+    // lowercase so "Owner/Repo" and "owner/repo" are the same PR for de-dup and
+    // storage (GitHub's API accepts either casing).
+    const repo = typeof body.repo === "string" ? body.repo.trim().toLowerCase() : "";
     const prNumber = Number(body.prNumber);
     const filePath = typeof body.filePath === "string" ? body.filePath.trim() : "";
     if (!repo || !Number.isInteger(prNumber) || prNumber <= 0 || !filePath) {
@@ -115,19 +120,49 @@ export async function POST(req: Request) {
       }
       throw e;
     }
+
+    // De-dup: refuse a second copy of the SAME PR file @ same head, same target,
+    // while an earlier one is still open. Promotion across targets (dev → prod)
+    // stays allowed because this is scoped to `targetDb`.
+    const dup = await findOpenDuplicatePrRequest({
+      targetDb, repo, prNumber, filePath, headSha: prMeta.headSha,
+    });
+    if (dup) {
+      return NextResponse.json(
+        {
+          error: `${repo}#${prNumber} (${filePath}) @ ${prMeta.headSha.slice(0, 8)} is already queued for ${targetDb} as "${dup.title}" (${dup.status}). Open that request instead of adding it again.`,
+          code: "duplicate",
+          existingId: dup.id,
+        },
+        { status: 409 },
+      );
+    }
   }
 
-  const rec = await createRequest({
-    title: effectiveTitle,
-    targetDb,
-    upSql: effectiveUpSql,
-    downSql: prMeta ? "" : downSql,
-    intent,
-    pr: prMeta
-      ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }
-      : undefined,
-    requestedBy: session.user,
-  });
+  let rec: Awaited<ReturnType<typeof createRequest>>;
+  try {
+    rec = await createRequest({
+      title: effectiveTitle,
+      targetDb,
+      upSql: effectiveUpSql,
+      downSql: prMeta ? "" : downSql,
+      intent,
+      pr: prMeta
+        ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }
+        : undefined,
+      requestedBy: session.user,
+    });
+  } catch (e) {
+    // The advisory-locked de-dup inside createRequest lost the race to an
+    // identical concurrent submission — surface the same 409 as the pre-check.
+    if (e instanceof DuplicatePrError) {
+      return NextResponse.json(
+        { error: e.message + " Open that request instead of adding it again.", code: "duplicate", existingId: e.existingId },
+        { status: 409 },
+      );
+    }
+    throw e;
+  }
 
   if (prMeta) {
     try {

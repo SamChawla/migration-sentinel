@@ -8,6 +8,7 @@ import {
 import { buildVerdictComment } from "@sentinel/core";
 import { createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
+import { publicBaseUrl } from "@/lib/base-url";
 
 export const runtime = "nodejs";
 
@@ -43,6 +44,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
+  // The verdict comment is read by people on a PUBLIC PR, so the console link
+  // must be a reachable base URL — see publicBaseUrl.
+  const baseUrl = publicBaseUrl(req);
+
   const body = buildVerdictComment({
     requestId: rec.id,
     title: rec.title,
@@ -53,7 +58,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     rowsAffected: rec.rowsAffected,
     findings: rec.findings.map((f) => ({ statement: f.statement, severity: f.severity, note: f.note })),
     qodo: { verdict: rec.qodoVerdict, findings: rec.qodoFindings },
-    consoleUrl: `${new URL(req.url).origin}/requests/${rec.id}`,
+    consoleUrl: `${baseUrl}/requests/${rec.id}`,
   });
 
   try {

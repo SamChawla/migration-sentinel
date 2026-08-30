@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, asc, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
+import { eq, asc, desc, sql, and, or, inArray, notInArray, ilike } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -407,6 +407,22 @@ export interface CreateRequestInput {
 }
 
 /**
+ * Thrown by createRequest when an OPEN request for the same PR file @ head,
+ * same target, already exists — detected under an advisory lock so it holds even
+ * for two concurrent submissions. The route turns it into a 409.
+ */
+export class DuplicatePrError extends Error {
+  constructor(
+    public readonly existingId: string,
+    public readonly existingTitle: string,
+    public readonly existingStatus: RequestStatus,
+  ) {
+    super(`This PR file is already queued as "${existingTitle}" (${existingStatus}).`);
+    this.name = "DuplicatePrError";
+  }
+}
+
+/**
  * Create a new migration request + initial artifact + pending approval.
  * Returns the hydrated record.
  */
@@ -433,6 +449,34 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
 
     const isIntent = !input.upSql.trim() && Boolean(input.intent?.trim());
     const isPr = Boolean(input.pr);
+
+    // Concurrency-safe de-dup: serialize identical PR submissions on a
+    // transaction advisory lock keyed by (target, repo, pr, file, head), THEN
+    // re-check for an open copy inside the lock — so two racing submits (double
+    // click, retry) can't both pass a read-then-insert and create twins. The
+    // losing one throws DuplicatePrError, which the route maps to a 409.
+    if (isPr && input.pr) {
+      const { repo, prNumber, file, headSha } = input.pr;
+      const dupeKey = `${targetId}:${repo}:${prNumber}:${file}:${headSha}`;
+      await tx.execute(sql`select pg_advisory_xact_lock(4242, hashtext(${dupeKey}))`);
+      const [open] = await tx
+        .select({ id: migrationRequest.id, title: migrationRequest.title, status: migrationRequest.status })
+        .from(migrationRequest)
+        .where(
+          and(
+            eq(migrationRequest.targetDatabaseId, targetId),
+            eq(migrationRequest.intakeKind, "github_pr"),
+            sql`${migrationRequest.intakePayload}->'pr'->>'repo' = ${repo}`,
+            sql`(${migrationRequest.intakePayload}->'pr'->>'prNumber')::int = ${prNumber}`,
+            sql`${migrationRequest.intakePayload}->'pr'->>'file' = ${file}`,
+            sql`${migrationRequest.intakePayload}->'pr'->>'headSha' = ${headSha}`,
+            notInArray(migrationRequest.status, TERMINAL_STATUSES),
+          ),
+        )
+        .limit(1);
+      if (open) throw new DuplicatePrError(open.id, open.title, open.status);
+    }
+
     const [req] = await tx
       .insert(migrationRequest)
       .values({
@@ -481,6 +525,89 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
 
   const record = await getRequest(reqId);
   return record!;
+}
+
+// A migration is "open" (not yet resolved) in any status other than these four
+// terminal ones. Re-submitting the SAME PR file while an open copy exists is a
+// duplicate; once a copy is applied/rejected/rolled_back/failed, a fresh run is
+// legitimate (e.g. re-analyze after fixing the data).
+const TERMINAL_STATUSES: RequestStatus[] = ["applied", "rejected", "rolled_back", "failed"];
+
+/**
+ * Find an OPEN (non-terminal) migration request that is the same GitHub PR file,
+ * at the same head commit, aimed at the same target — the signature of a
+ * duplicate PR intake. Scoped to one target so promoting the same PR across
+ * environments (dev → staging → prod) is NOT flagged. Returns the existing
+ * request's id + title so the caller can point the user at it.
+ */
+export async function findOpenDuplicatePrRequest(input: {
+  targetDb: string;
+  repo: string;
+  prNumber: number;
+  filePath: string;
+  headSha: string;
+}): Promise<{ id: string; title: string; status: RequestStatus } | null> {
+  const rows = await db
+    .select({ id: migrationRequest.id, title: migrationRequest.title, status: migrationRequest.status })
+    .from(migrationRequest)
+    .innerJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(
+      and(
+        eq(targetDatabase.connectionAlias, input.targetDb),
+        eq(migrationRequest.intakeKind, "github_pr"),
+        sql`${migrationRequest.intakePayload}->'pr'->>'repo' = ${input.repo}`,
+        sql`(${migrationRequest.intakePayload}->'pr'->>'prNumber')::int = ${input.prNumber}`,
+        sql`${migrationRequest.intakePayload}->'pr'->>'file' = ${input.filePath}`,
+        sql`${migrationRequest.intakePayload}->'pr'->>'headSha' = ${input.headSha}`,
+        notInArray(migrationRequest.status, TERMINAL_STATUSES),
+      ),
+    )
+    .orderBy(desc(migrationRequest.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export type DeleteOutcome =
+  | { outcome: "deleted" }
+  | { outcome: "not_found" }
+  | { outcome: "blocked"; status: RequestStatus };
+
+/**
+ * Hard-delete a migration request and everything hanging off it, ATOMICALLY with
+ * its deletability guard. Locks the row FOR UPDATE, checks its status against
+ * `undeletable`, and only then audits + deletes — so a worker (analysis or
+ * apply) cannot transition the row into an active state between the check and
+ * the delete: its status UPDATE blocks on the same row lock. The FK graph
+ * cascades (artifacts, shadow/apply runs, blast/preflight, approval, github
+ * link); the audit trail is kept (its FK is ON DELETE SET NULL).
+ */
+export async function deleteRequestIfDeletable(
+  id: string,
+  undeletable: readonly string[],
+  audit: { actor: string },
+): Promise<DeleteOutcome> {
+  return await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ status: migrationRequest.status, title: migrationRequest.title })
+      .from(migrationRequest)
+      .where(eq(migrationRequest.id, id))
+      .for("update")
+      .limit(1);
+    if (!row) return { outcome: "not_found" };
+    if (undeletable.includes(row.status)) return { outcome: "blocked", status: row.status };
+
+    // Audit BEFORE the cascade — the audit FK is ON DELETE SET NULL, so the row
+    // survives, detached from the deleted request.
+    await tx.insert(auditEvent).values({
+      migrationRequestId: id,
+      actor: audit.actor,
+      action: "request.deleted",
+      detail: `Deleted "${row.title}" (was ${row.status}).`,
+      tone: "red",
+    });
+    await tx.delete(migrationRequest).where(eq(migrationRequest.id, id));
+    return { outcome: "deleted" };
+  });
 }
 
 /**
