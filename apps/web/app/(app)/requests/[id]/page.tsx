@@ -15,6 +15,7 @@ import { GithubPanel } from "@/components/console/GithubPanel";
 import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readouts";
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
+import { RetryButton } from "@/components/console/RetryButton";
 import { MigrationChat } from "@/components/console/MigrationChat";
 import { SchemaErd, type SceneTable, type FkEdge } from "@/components/scene/SchemaErd";
 import { AutoRefresh } from "@/components/AutoRefresh";
@@ -383,6 +384,19 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
         </span>
       </div>
 
+      {/* Failed pipeline — nothing was applied; offer a one-click retry that
+          resets to received and re-runs the full analysis. */}
+      {r.status === "failed" && (
+        <div className="paused-banner" style={{ marginBottom: 14, borderColor: "var(--danger)", display: "flex", alignItems: "center", gap: 12 }}>
+          <span className="pulse-dot" />
+          <span style={{ flex: 1 }}>
+            The analysis pipeline failed before reaching the gate — <b>no production changes were made</b>.
+            Fix the cause (target/shadow connectivity, model, or the SQL itself) and retry.
+          </span>
+          <RetryButton requestId={r.id} />
+        </div>
+      )}
+
       {/* Gate 2 (PR4): approved, exported, waiting on the source-of-truth merge. */}
       {r.status === "awaiting_merge" && (
         <div className="paused-banner" style={{ marginBottom: 14 }}>
@@ -460,6 +474,14 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
               <span className="mono" style={{ fontSize: 10, color: "var(--faint)", letterSpacing: ".06em" }}>⚡ TrueForge session</span>
             </div>
             <EnergyProgressBar phases={PHASES} currentIndex={phaseIndex(r)} percent={phasePercent(r)} />
+            {preAnalysis && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line)" }}>
+                <span style={{ fontSize: 11, color: "var(--faint)" }}>
+                  Stuck here? A crash or restart can strand a run — retry re-claims it after a short wait.
+                </span>
+                <RetryButton requestId={r.id} size="sm" label="Retry" />
+              </div>
+            )}
           </div>
 
           {/* Commit console */}

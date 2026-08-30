@@ -854,6 +854,113 @@ export async function claimRequestForPipeline(requestId: string): Promise<boolea
   return rows.length === 1;
 }
 
+/** States a stranded pipeline can sit in — a crash/restart between claim and the
+ *  failure handler can leave a request here with no running worker. */
+const RETRYABLE_STUCK: RequestStatus[] = ["received", "generating", "reviewing", "dry_running"];
+
+export type RetryOutcome =
+  | { ok: true; from: RequestStatus }
+  | { ok: false; reason: "not_found" | "not_retryable" | "in_progress" | "apply_stage" };
+
+/**
+ * Reset a request so the analysis pipeline can re-run from scratch, then leave it
+ * in 'received' for the caller to re-enqueue via runAgentPipeline.
+ *
+ * Eligibility:
+ *  - `failed` → yes, UNLESS the failure happened at the apply stage. A failure
+ *    with an apply_run row may have PARTIALLY committed the target (an autocommit
+ *    CREATE INDEX CONCURRENTLY, or a lost COMMIT response — apply.ts records both
+ *    as 'failed' + "reconciliation required" and does NOT prove a rollback).
+ *    Re-analyzing such a request as if the target is untouched is unsafe, so it
+ *    needs manual reconciliation, not an auto-retry → `apply_stage`.
+ *  - a stuck pre-apply state (received/generating/reviewing/dry_running) → only
+ *    when there has been NO activity for `staleMs` (default 5 min), so a genuinely
+ *    running pipeline is never yanked out from under itself. "Activity" is the
+ *    most recent of the row's updatedAt AND its latest audit event — the pipeline
+ *    emits audit events as it works, so they act as a heartbeat that updatedAt
+ *    alone (set once at the dry_running transition) misses during the long
+ *    shadow/qodo phase. This is still a heuristic; a durable per-run lease is the
+ *    robust fix (tracked separately).
+ *
+ * The reset disarms the approval gate (decision→pending, typed-confirm cleared)
+ * AND clears the previous run's TrueForge pause coordinates, so a later
+ * approve/reject can never resolve the obsolete pre-retry tool call.
+ */
+export async function retryRequest(
+  requestId: string,
+  opts: { staleMs?: number; actor?: string } = {},
+): Promise<RetryOutcome> {
+  const staleMs = opts.staleMs ?? 5 * 60_000;
+  return await db.transaction(async (tx) => {
+    const [cur] = await tx
+      .select({ status: migrationRequest.status, updatedAt: migrationRequest.updatedAt })
+      .from(migrationRequest)
+      .where(eq(migrationRequest.id, requestId))
+      .for("update")
+      .limit(1);
+    if (!cur) return { ok: false, reason: "not_found" } as const;
+
+    const status = cur.status as RequestStatus;
+    const isFailed = status === "failed";
+    const isStuck = RETRYABLE_STUCK.includes(status);
+    if (!isFailed && !isStuck) return { ok: false, reason: "not_retryable" } as const;
+
+    // A failure that reached the apply stage (has an apply_run) may have changed
+    // the target — refuse the auto-retry; it needs manual reconciliation.
+    if (isFailed) {
+      const [ar] = await tx
+        .select({ id: applyRun.id })
+        .from(applyRun)
+        .where(eq(applyRun.migrationRequestId, requestId))
+        .limit(1);
+      if (ar) return { ok: false, reason: "apply_stage" } as const;
+    }
+
+    if (isStuck) {
+      const [lastEv] = await tx
+        .select({ at: auditEvent.createdAt })
+        .from(auditEvent)
+        .where(eq(auditEvent.migrationRequestId, requestId))
+        .orderBy(desc(auditEvent.createdAt))
+        .limit(1);
+      const lastActivity = Math.max(cur.updatedAt?.getTime() ?? 0, lastEv?.at?.getTime() ?? 0);
+      if (Date.now() - lastActivity < staleMs) return { ok: false, reason: "in_progress" } as const;
+    }
+
+    // Conditional flip guarded on the OBSERVED status (the FOR UPDATE lock holds
+    // it, but keep the guard so the intent is explicit and the UPDATE is a no-op
+    // if anything slipped past). Also drop the stale TrueForge coordinates.
+    const moved = await tx
+      .update(migrationRequest)
+      .set({
+        status: "received",
+        updatedAt: new Date(),
+        trueforgeSessionId: null,
+        trueforgeThreadId: null,
+        trueforgeToolCallId: null,
+      })
+      .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, status)))
+      .returning({ id: migrationRequest.id });
+    if (moved.length !== 1) return { ok: false, reason: "in_progress" } as const;
+
+    await tx
+      .update(approval)
+      .set({ decision: "pending", approver: null, decidedAt: null, requiresTypedConfirm: false, expectedConfirmValue: null })
+      .where(eq(approval.migrationRequestId, requestId));
+
+    await tx.insert(auditEvent).values({
+      migrationRequestId: requestId,
+      actor: opts.actor ?? "unknown",
+      action: "request.retried",
+      detail: `Retry requested from '${status}' — re-running the full analysis pipeline.`,
+      tone: "info",
+      payload: { fromStatus: status },
+    });
+
+    return { ok: true, from: status } as const;
+  });
+}
+
 // ── Promotion (environment ladder) ───────────────────────────────────────
 
 export interface PromotionGroupRow {

@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ENV_ORDER, nextEnv, type DbEnvironment, type RequestStatus } from "@sentinel/core";
 import { EnvBadge } from "@/components/EnvBadge";
@@ -9,6 +9,13 @@ export interface RailRun {
   environment: DbEnvironment;
   status: RequestStatus;
   targetAlias: string;
+}
+
+interface Conn {
+  id: string;
+  alias: string;
+  environment: DbEnvironment;
+  hasUrl: boolean;
 }
 
 /**
@@ -34,6 +41,10 @@ export function PromotionRail({
   const router = useRouter();
   const [promoting, setPromoting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [targets, setTargets] = useState<Conn[] | null>(null);
+  const [chosenAlias, setChosenAlias] = useState<string>("");
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Latest run per environment (runs arrive oldest→newest, so the last wins).
   const latest = new Map<DbEnvironment, RailRun>();
@@ -42,11 +53,57 @@ export function PromotionRail({
   const target = nextEnv(environment);
   const canPromote = status === "applied" && target !== null;
 
+  // When a promotion is possible, load the registered connections for the NEXT
+  // environment so the operator picks WHICH one to clone against (the server
+  // otherwise falls back to the first next-env connection with a URL). Only
+  // URL-backed connections are eligible — a URL-less alias can't be run.
+  const loadTargets = useCallback(() => {
+    if (!canPromote || !target) return;
+    // Cancel any in-flight load so a slow earlier response for a DIFFERENT target
+    // can't land after a newer one (out-of-order results for the wrong rung).
+    abortRef.current?.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setLoadError(null);
+    setTargets(null); // clear stale rows while (re)loading
+    fetch("/api/connections", { signal: ac.signal })
+      .then(async (r) => {
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || `Server returned ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (ac.signal.aborted) return;
+        const conns: Conn[] = (d.connections ?? []).filter(
+          (c: Conn) => c.environment === target && c.hasUrl,
+        );
+        setTargets(conns);
+        // Keep the current choice only if it's still valid for THIS env; otherwise
+        // default to the first. Prevents a prior env's alias surviving a target change.
+        setChosenAlias((cur) => (conns.some((c) => c.alias === cur) ? cur : conns[0]?.alias ?? ""));
+      })
+      .catch((e) => {
+        if (ac.signal.aborted) return;
+        // Distinguish a real load failure (auth/network/server) from a
+        // successfully-empty list — the latter means "no connection configured";
+        // rendering both as empty would hide the failure and offer no retry.
+        setTargets(null);
+        setLoadError(e instanceof Error ? e.message : "Could not load connections.");
+      });
+  }, [canPromote, target]);
+
+  useEffect(() => { loadTargets(); }, [loadTargets]);
+
   async function promote() {
     setError(null);
     setPromoting(true);
     try {
-      const res = await fetch(`/api/requests/${requestId}/promote`, { method: "POST" });
+      const res = await fetch(`/api/requests/${requestId}/promote`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // Send the chosen target when one is picked; omit it to let the server
+        // pick the first eligible next-env connection (unchanged fallback).
+        body: JSON.stringify(chosenAlias ? { targetAlias: chosenAlias } : {}),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `Server returned ${res.status}`);
       router.push(`/requests/${data.id}`);
@@ -55,6 +112,8 @@ export function PromotionRail({
       setPromoting(false);
     }
   }
+
+  const noTargetConn = canPromote && targets !== null && targets.length === 0;
 
   function statusColor(s: RequestStatus): string {
     if (s === "applied") return "var(--safe)";
@@ -123,13 +182,47 @@ export function PromotionRail({
       )}
 
       {canPromote && (
-        <div style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 10 }}>
-          <button type="button" className="btn btn-cyan btn-sm" disabled={promoting} onClick={promote}>
-            {promoting ? "Promoting…" : `Promote to ${target}`}
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          {/* Target picker — shown only when more than one next-env connection
+              exists. A single connection is auto-selected (no needless choice);
+              zero shows the honest "add a connection" hint below. */}
+          {targets && targets.length > 1 && (
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--faint)" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <EnvBadge env={target!} /> target
+              </span>
+              <select
+                className="field field-mono"
+                aria-label={`Target ${target} connection`}
+                value={chosenAlias}
+                onChange={(e) => setChosenAlias(e.target.value)}
+                style={{ padding: "4px 8px", fontSize: 12, cursor: "pointer" }}
+              >
+                {targets.map((c) => (
+                  <option key={c.id} value={c.alias}>{c.alias}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button type="button" className="btn btn-cyan btn-sm" disabled={promoting || noTargetConn || !!loadError} onClick={promote}>
+            {promoting
+              ? "Promoting…"
+              : targets && targets.length === 1
+                ? `Promote to ${chosenAlias || target}`
+                : `Promote to ${target}`}
           </button>
-          <span style={{ fontSize: 11, color: "var(--faint)" }}>
-            Clones this migration against a {target} connection and re-runs the full analysis.
-          </span>
+          {loadError ? (
+            <span className="inline-error" role="alert" style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 8 }}>
+              Couldn&apos;t load {target} connections: {loadError}
+              <button type="button" className="btn btn-sm" onClick={loadTargets}>Retry</button>
+            </span>
+          ) : (
+            <span style={{ fontSize: 11, color: "var(--faint)" }}>
+              {noTargetConn
+                ? `No ${target} connection with a URL — add one in Settings first.`
+                : `Clones this migration against a ${target} connection and re-runs the full analysis.`}
+            </span>
+          )}
         </div>
       )}
       {error && <div className="inline-error" role="alert" style={{ marginTop: 8 }}>{error}</div>}
