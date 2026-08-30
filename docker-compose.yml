@@ -97,8 +97,8 @@ services:
         pnpm install --frozen-lockfile --ignore-scripts 2>&1 | tail -1
         echo "→ Running drizzle migrate (sentinel-db schema)…"
         pnpm db:migrate
-        echo "→ Seeding sentinel control-plane…"
-        pnpm db:seed:sentinel --reset
+        echo "→ Seeding sentinel control-plane (skips if already seeded)…"
+        pnpm db:seed:sentinel || { code=$?; [ "$code" -eq 2 ] || exit "$code"; echo "• sentinel-db already seeded — skipping"; }
         echo ""
         echo "✓ All databases ready and seeded."
         echo "  target-db  (prod)    — auto-seeded via init script (50k users, ~130k orders)"
