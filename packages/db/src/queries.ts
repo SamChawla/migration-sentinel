@@ -1513,6 +1513,20 @@ export async function countAuditEvents(): Promise<number> {
   return row?.count ?? 0;
 }
 
+/** The most recent failure detail for a request — surfaced on the failed banner so
+ *  the operator sees WHY the pipeline failed (pg_dump/shadow connectivity, the SQL,
+ *  the model, …), not just that it did. Matches the *.failed audit actions the
+ *  pipeline/apply write (pipeline.failed, apply.failed, github.link_failed). */
+export async function getLatestFailureDetail(requestId: string): Promise<string | null> {
+  const rows = await db
+    .select({ detail: auditEvent.detail })
+    .from(auditEvent)
+    .where(and(eq(auditEvent.migrationRequestId, requestId), ilike(auditEvent.action, "%failed%")))
+    .orderBy(desc(auditEvent.createdAt), desc(auditEvent.id))
+    .limit(1);
+  return rows[0]?.detail ?? null;
+}
+
 /** Audit events for ONE request, filtered in SQL and bounded — used by the live
  *  SSE poller so a per-second tick never scans the whole audit table. */
 export async function listAuditEventsForRequest(requestId: string, limit = 50): Promise<AuditEventRow[]> {
