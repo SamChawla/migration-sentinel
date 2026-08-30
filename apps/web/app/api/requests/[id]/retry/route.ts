@@ -26,6 +26,11 @@ export async function POST(_req: Request, { params }: { params: Promise<{ id: st
         error: "Only a failed or stranded request can be retried — this one is still in flight or already resolved.",
         status: 409,
       },
+      apply_stage: {
+        error:
+          "This request failed during apply — the target may have partially changed and needs manual reconciliation, so it can't be auto-retried.",
+        status: 409,
+      },
       in_progress: {
         error: "This request is still being analyzed — wait for it to finish or fail before retrying.",
         status: 409,
