@@ -8,17 +8,34 @@ import { getSession } from "@/lib/auth";
 
 const PROBE_DEADLINE_MS = 8000;
 
-/** Resolve hostname once and return the IP if it's public, or null if private/unresolvable.
- *  Prevents DNS rebinding: the caller connects to the returned IP, not the hostname. */
-async function resolvePublicHost(hostname: string): Promise<string | null> {
+/** SSRF guard is ON by default. Set ALLOW_PRIVATE_DB_HOSTS=1 for self-hosted /
+ *  PaaS deployments (Zerops, Fly, Railway, docker-compose) where the target
+ *  databases legitimately live on the project's INTERNAL network and resolve to
+ *  private addresses. Only flip this where every operator who can add a
+ *  connection is already trusted to reach internal infrastructure. */
+function allowPrivateDbHosts(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.ALLOW_PRIVATE_DB_HOSTS?.trim() ?? "");
+}
+
+type HostResolution = { ok: true; host: string } | { ok: false; reason: "private" | "unresolved" };
+
+/** Resolve hostname once and return the address to connect to (pins against DNS
+ *  rebinding: the caller connects to this, not the original name). Private/internal
+ *  results are rejected UNLESS `allowPrivate` is set, in which case they're accepted
+ *  and an unresolvable name is deferred to the driver's own resolver (internal PaaS
+ *  DNS often resolves only at connect time). */
+async function resolveDbHost(hostname: string, allowPrivate: boolean): Promise<HostResolution> {
   if (net.isIP(hostname)) {
-    return isPrivateIp(hostname) ? null : hostname;
+    if (isPrivateIp(hostname) && !allowPrivate) return { ok: false, reason: "private" };
+    return { ok: true, host: hostname };
   }
   try {
     const { address } = await dns.lookup(hostname);
-    return isPrivateIp(address) ? null : address;
+    if (isPrivateIp(address) && !allowPrivate) return { ok: false, reason: "private" };
+    return { ok: true, host: address };
   } catch {
-    return null;
+    if (allowPrivate) return { ok: true, host: hostname };
+    return { ok: false, reason: "unresolved" };
   }
 }
 
@@ -143,15 +160,19 @@ export async function POST(req: Request) {
   try { parsed = new URL(url); } catch {
     return NextResponse.json({ error: "Malformed connection URL." }, { status: 400 });
   }
-  const resolvedIp = await resolvePublicHost(parsed.hostname);
-  if (!resolvedIp) {
-    return NextResponse.json({ error: "Connections to private/internal network addresses are not allowed." }, { status: 422 });
+  const resolved = await resolveDbHost(parsed.hostname, allowPrivateDbHosts());
+  if (!resolved.ok) {
+    const message =
+      resolved.reason === "private"
+        ? "Connections to private/internal network addresses are not allowed. If this database is on a trusted internal network (e.g. a PaaS like Zerops/Fly, or docker-compose), set ALLOW_PRIVATE_DB_HOSTS=1 on the server."
+        : "Could not resolve the database host — check the hostname.";
+    return NextResponse.json({ error: message }, { status: 422 });
   }
 
-  // Connect to the resolved IP so a DNS rebind between validation and
+  // Connect to the resolved address so a DNS rebind between validation and
   // connect cannot redirect the probe to a different (private) host.
   const probeUrl = new URL(url);
-  probeUrl.hostname = net.isIPv6(resolvedIp) ? `[${resolvedIp}]` : resolvedIp;
+  probeUrl.hostname = net.isIPv6(resolved.host) ? `[${resolved.host}]` : resolved.host;
   const probe = await probeConnection(probeUrl.toString(), req.signal);
   if (!probe.ok) {
     return NextResponse.json({ error: `Could not connect: ${probe.error}` }, { status: 400 });

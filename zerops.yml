@@ -59,6 +59,10 @@ zerops:
         STAGING_DB_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/staging
         SHADOW_ADMIN_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/postgres
         SHADOW_DATABASE_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/shadow
+        # The PostgreSQL service is on the project's INTERNAL network, so ${db_hostname}
+        # resolves to a private address. Allow the connections API to add such targets —
+        # every operator who can add a connection here is already trusted.
+        ALLOW_PRIVATE_DB_HOSTS: "1"
         # ── App secrets — set the real values in the Zerops GUI (Service → Env
         # variables) as SECRET vars, not here in the repo.
         APPROVER_TOKEN: ${APPROVER_TOKEN}
