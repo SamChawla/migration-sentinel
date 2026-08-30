@@ -61,13 +61,15 @@ async function main() {
     );
     if (existing.rows[0].n > 0 && !RESET) {
       await client.query("ROLLBACK");
+      // Exit code 2 = the anti-clobber guard (already seeded); zerops-bootstrap.mjs
+      // treats it as expected steady state and swallows only this code.
       console.error(
         `✗ Refusing to seed: the target's public schema already holds ${existing.rows[0].n} object(s) ` +
           `(tables / views / sequences / functions / types). This fixture DROPS the public schema. ` +
           `Re-run with --reset to wipe and reseed.`,
       );
       await client.end();
-      process.exit(1);
+      process.exit(2);
     }
     await client.query(sql);
     await client.query("COMMIT");

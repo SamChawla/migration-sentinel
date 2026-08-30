@@ -839,13 +839,15 @@ function redact(url: string): string {
 }
 
 main().catch((err) => {
+  // Exit code 2 = the anti-clobber guard (already seeded); zerops-bootstrap.mjs
+  // treats it as expected steady state and swallows only this code.
   if (err instanceof SeedGuardError) {
     console.error(
       `✗ Refusing to seed: sentinel-db already holds ${err.count} control-plane row(s) ` +
         `(migration requests / target registrations / audit events). ` +
         `Re-run with --reset to wipe and reseed the demo data.`,
     );
-    process.exit(1);
+    process.exit(2);
   }
   console.error("✗ Seed failed:", err.message);
   process.exit(1);

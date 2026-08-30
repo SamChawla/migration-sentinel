@@ -131,11 +131,16 @@ function seed() {
         stdio: "inherit",
         env: { ...process.env, ...extraEnv },
       });
-    } catch {
-      // The seed scripts exit non-zero when a database is already populated
-      // (their anti-clobber guard). That is the expected steady state — never
-      // fail the deploy on it.
-      console.log(`• ${script} skipped (already seeded or guarded)`);
+    } catch (e) {
+      if (e.status === 2) {
+        // Exit code 2 is the seed scripts' dedicated anti-clobber guard
+        // (database already populated) — the expected steady state.
+        console.log(`• ${script} skipped (already seeded)`);
+        return;
+      }
+      // Any other failure (bad creds, missing file, SQL error, ...) must fail
+      // the deploy, not be silently treated as "already seeded".
+      throw new Error(`${script} failed (exit ${e.status ?? "unknown"})`);
     }
   };
   run("scripts/seed-sentinel.ts");
