@@ -12,17 +12,10 @@ export default async function AuditLog({
   searchParams: Promise<{ page?: string }>;
 }) {
   const { page: pageParam } = await searchParams;
-  let total: number;
-  let events: Awaited<ReturnType<typeof listAuditEvents>>;
-  try {
-    total = await countAuditEvents();
-    const pc = Math.max(1, Math.ceil(total / PAGE_SIZE));
-    const pg = Math.min(Math.max(parseInt(pageParam ?? "1", 10) || 1, 1), pc);
-    events = await listAuditEvents({ limit: PAGE_SIZE, offset: (pg - 1) * PAGE_SIZE });
-  } catch {
-    total = 0;
-    events = [];
-  }
+  const total = await countAuditEvents();
+  const pc = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pg = Math.min(Math.max(parseInt(pageParam ?? "1", 10) || 1, 1), pc);
+  const events = await listAuditEvents({ limit: PAGE_SIZE, offset: (pg - 1) * PAGE_SIZE });
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const page = Math.min(Math.max(parseInt(pageParam ?? "1", 10) || 1, 1), pageCount);
   const offset = (page - 1) * PAGE_SIZE;

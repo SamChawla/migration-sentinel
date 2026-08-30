@@ -46,12 +46,17 @@ zerops:
         NODE_ENV: production
         PORT: "3000"
         HOSTNAME: 0.0.0.0
-        # ── Database wiring — uses the PostgreSQL service SUPERUSER so the shadow
-        # role can CREATE/DROP the ephemeral dry-run clones. `db` = the hostname
-        # of your PostgreSQL service; rename both if you named it differently.
-        DATABASE_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/sentinel
-        TARGET_DB_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/prod
-        STAGING_DB_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/staging
+        # ── Database wiring — sentinel/prod/staging use a scoped `sentinel_app`
+        # role (bootstrap makes it owner of just those 3 DBs). Only
+        # SHADOW_ADMIN_URL keeps the PostgreSQL service SUPERUSER, since only
+        # ephemeral clone CREATE/DROP needs cluster-wide privileges. `db` = the
+        # hostname of your PostgreSQL service; rename both if named differently.
+        # APP_DB_PASSWORD is interpolated below unencoded, so it MUST be
+        # URL-safe (letters, digits, . _ ~ - only) — see zerops-project-import.yml.
+        APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+        DATABASE_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/sentinel
+        TARGET_DB_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/prod
+        STAGING_DB_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/staging
         SHADOW_ADMIN_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/postgres
         SHADOW_DATABASE_URL: postgres://${db_superUser}:${db_superUserPassword}@${db_hostname}:${db_port}/shadow
         # ── App secrets — set the real values in the Zerops GUI (Service → Env

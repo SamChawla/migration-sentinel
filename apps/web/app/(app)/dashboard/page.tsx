@@ -38,15 +38,12 @@ async function probeHttp(url: string | undefined): Promise<boolean> {
 }
 
 export default async function Dashboard() {
-  const fallbackStats: Awaited<ReturnType<typeof getDashboardStats>> = { awaiting: 0, applied: 0, blocked: 0, proven: 0 };
-  const fallbackSev: Awaited<ReturnType<typeof getSeverityDistribution>> = { green: 0, amber: 0, red: 0 };
-
   const [requests, audit, stats, sevDist, connections, targetUp, shadowUp, sentinelUp, trueforgeUp] = await Promise.all([
-    listRequests({ limit: 5 }).catch(() => [] as Awaited<ReturnType<typeof listRequests>>),
-    listAuditEvents().catch(() => [] as Awaited<ReturnType<typeof listAuditEvents>>),
-    getDashboardStats().catch(() => fallbackStats),
-    getSeverityDistribution().catch(() => fallbackSev),
-    listTargetDatabases().catch(() => []),
+    listRequests({ limit: 5 }),
+    listAuditEvents(),
+    getDashboardStats(),
+    getSeverityDistribution(),
+    listTargetDatabases(),
     probeDb(process.env.TARGET_DB_URL),
     probeDb(process.env.SHADOW_ADMIN_URL),
     probeDb(process.env.DATABASE_URL),
