@@ -18,7 +18,7 @@
 Built for the **TrueForge Agent Harness Hackathon** (WeMakeDevs × TrueFoundry). The agent runs on TrueForge; every migration travels one pipeline; nothing skips the gate.
 
 <p align="center">
-  <img src="assets/pipeline-flow.svg" alt="intake → generate up/down → shadow dry-run (blast radius + rollback proof) → data pre-flight → Qodo review → ⏸ human gate → guarded apply → audit" width="740">
+  <img src="assets/pipeline-flow.svg" alt="intake (NL · raw SQL · GitHub PR) → generate up/down → shadow dry-run (blast radius + rollback proof) → data pre-flight → Qodo review → ⏸ human gate → export PR + merge (prod gate 2) → guarded apply → audit" width="740">
 </p>
 
 > **▶ Run it locally in ~5 minutes** — install, seed, and log in with one click:
@@ -74,29 +74,33 @@ The model **proposes**; deterministic policy **disposes**. The severity, the rol
 
 ## The pipeline
 
-<p align="center">
-  <img src="assets/workflow.svg" alt="Migration Sentinel pipeline — Intake, Generate, Dry-run, Pre-flight, Qodo, human Gate, Apply, Audit" width="100%">
-</p>
-
-Every request travels the same path. The agent orchestrates it and then **physically pauses** at the gate — the apply tool cannot run until a human decision is recorded in our own database.
+Every request travels the same path. The agent orchestrates it and then **physically pauses** at the gate — the apply tool cannot run until a human decision is recorded in our own database. For a prod-bound change on a linked repo, approval **exports a PR** instead of applying, and the human **merge** of that PR is a second gate.
 
 ```mermaid
 flowchart TD
-    A[Intake: NL intent or raw SQL] --> B{Have SQL?}
+    I1[NL intent] --> B
+    I2[raw SQL] --> B
+    I3[GitHub PR<br/>read server-side @ head SHA] --> B
+    B{Have SQL?}
     B -- No --> G[TrueForge generates up/down + summary]
     B -- Yes --> C
     G --> C[pg_dump target schema → clone onto ephemeral shadow]
     C --> D[Static blast classifier]
     C --> E[Rollback proof: up→down schema fingerprint]
     C --> F[Data pre-flight: read-only probes on real target]
-    C --> Q[Qodo review of the SQL]
+    C --> Q[Qodo review of the SQL → optional PR verdict comment]
     D & E & F & Q --> P[Gate disposition policy]
     P --> DIS{Disposition}
     DIS -- blocked --> X[⛔ Refused — no approval can override]
     DIS -- auto / approval / typed_confirm --> GATE[⏸ Approval Console]
     GATE -- reject --> STOP[Clean stop]
-    GATE -- approve --> APPLY[Guarded apply: lock_timeout + statement_timeout, txn, auto-rollback]
+    GATE -- approve --> PROD{Prod + linked repo?}
+    PROD -- yes --> EXP[Export PR: up.sql · down.sql · report.md]
+    EXP --> MERGE[⏸ Human merges the PR on GitHub — gate 2]
+    MERGE -- merge verified live --> APPLY
+    PROD -- no --> APPLY[Guarded apply: lock_timeout + statement_timeout, txn, auto-rollback]
     APPLY --> AUD[apply_run + audit]
+    AUD --> PROM[Promote one rung up the ladder<br/>dev → staging → prod · same SQL, full re-analysis, stricter gate]
 ```
 
 ## The gate — four dispositions
@@ -163,23 +167,25 @@ flowchart LR
         AGENT[Agent orchestrator]
         SENT[(sentinel-db<br/>Drizzle state)]
     end
-    subgraph Analysis
+    subgraph Targets
         SHADOW[(shadow-db<br/>ephemeral clone)]
-        TARGET[(target-db<br/>real, read-only until apply)]
+        TARGET[(target dbs · ladder<br/>dev · staging · prod<br/>read-only until apply)]
     end
-    subgraph Sponsors
+    subgraph Integrations
         TF[TrueForge server<br/>session · turn · tool-approval]
         QODO[Qodo CLI / PR review]
+        GH[GitHub<br/>PR intake · verdict comment · export PR]
     end
 
     WEB --> AGENT
     AGENT --> SENT
     AGENT -->|generate| TF
+    AGENT -->|PR read @ head · verdict · export PR| GH
     AGENT -->|pg_dump schema| TARGET
     AGENT -->|clone + up/down proof| SHADOW
     AGENT -->|read-only probes| TARGET
     AGENT -->|review SQL| QODO
-    AGENT -.->|guarded apply on approval| TARGET
+    AGENT -.->|guarded apply on approval / verified merge| TARGET
 ```
 
 The **only** code path that writes the target is the guarded apply executor, and it independently re-asserts the gate before it runs.
@@ -190,9 +196,10 @@ Normalized state in our own Postgres (Drizzle). The `audit_event` table is appen
 
 ```mermaid
 erDiagram
-    target_database ||--o{ migration_request : targets
+    target_database ||--o{ migration_request : "targets (env: dev/staging/prod)"
     migration_request ||--o{ generated_artifact : has
     migration_request ||--|| approval : "gated by"
+    migration_request ||--o| github_link : "PR intake + export gate"
     migration_request ||--o{ shadow_run : "dry-run"
     migration_request ||--o{ apply_run : "applied by"
     migration_request ||--o{ audit_event : logs
