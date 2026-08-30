@@ -3,6 +3,7 @@ import {
   classifyStatement,
   classifyMigration,
   splitStatements,
+  splitUpDownSql,
 } from "../src/blast";
 import { MIGRATION_FIXTURES } from "../../../fixtures/migrations";
 
@@ -185,5 +186,60 @@ describe("classifyMigration — overall = worst statement", () => {
     expect(result.overallSeverity).toBe("red");
     expect(result.reversibility).toBe("irreversible");
     expect(result.statements).toHaveLength(2);
+  });
+});
+
+describe("splitUpDownSql — up/down section splitter", () => {
+  it("splits at a bare -- sentinel:down marker", () => {
+    const { up, down } = splitUpDownSql(
+      "CREATE INDEX CONCURRENTLY i ON t (c);\n-- sentinel:down\nDROP INDEX CONCURRENTLY IF EXISTS i;",
+    );
+    expect(up).toBe("CREATE INDEX CONCURRENTLY i ON t (c);");
+    expect(down).toBe("DROP INDEX CONCURRENTLY IF EXISTS i;");
+  });
+
+  it("accepts dbmate (-- migrate:down) and goose (-- +goose Down) markers", () => {
+    for (const marker of ["-- migrate:down", "-- +goose Down", "--sentinel:down", "-- DOWN"]) {
+      const { up, down } = splitUpDownSql(`ALTER TABLE t ADD COLUMN c int;\n${marker}\nALTER TABLE t DROP COLUMN c;`);
+      expect(up).toBe("ALTER TABLE t ADD COLUMN c int;");
+      expect(down).toBe("ALTER TABLE t DROP COLUMN c;");
+    }
+  });
+
+  it("no marker → whole input is up, down is empty", () => {
+    const { up, down } = splitUpDownSql("ALTER TABLE t DROP COLUMN legacy;");
+    expect(up).toBe("ALTER TABLE t DROP COLUMN legacy;");
+    expect(down).toBe("");
+  });
+
+  it("does NOT split on a marker-looking line inside a dollar-quoted body", () => {
+    const sql = [
+      "CREATE FUNCTION f() RETURNS void AS $$",
+      "BEGIN",
+      "  -- down",              // marker text INSIDE the function body — must be ignored
+      "  PERFORM 1;",
+      "END;",
+      "$$ LANGUAGE plpgsql;",
+      "-- sentinel:down",       // the REAL delimiter
+      "DROP FUNCTION f();",
+    ].join("\n");
+    const { up, down } = splitUpDownSql(sql);
+    expect(up).toContain("CREATE FUNCTION f()");
+    expect(up).toContain("-- down"); // still part of the up body, not a split point
+    expect(down).toBe("DROP FUNCTION f();");
+  });
+
+  it("does NOT split on marker text inside a block comment or a string literal", () => {
+    const blk = splitUpDownSql("/*\n-- down\n*/\nSELECT 1;\n-- migrate:down\nSELECT 2;");
+    expect(blk.down).toBe("SELECT 2;");
+    const str = splitUpDownSql("INSERT INTO t (note) VALUES (e'x\\n-- down\\n');\n-- down\nDELETE FROM t WHERE note LIKE 'x%';");
+    expect(str.up).toContain("INSERT INTO t");
+    expect(str.down).toBe("DELETE FROM t WHERE note LIKE 'x%';");
+  });
+
+  it("a descriptive comment is not mistaken for the marker", () => {
+    const { up, down } = splitUpDownSql("-- Down migration (for reference)\nCREATE TABLE t (id int);");
+    expect(down).toBe("");
+    expect(up).toContain("CREATE TABLE t (id int);");
   });
 });

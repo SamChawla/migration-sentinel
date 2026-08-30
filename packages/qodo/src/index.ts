@@ -17,7 +17,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 
 const execFileAsync = promisify(execFile);
@@ -55,19 +55,65 @@ const MAX_SQL_CHARS = 8000;
 const capSql = (s: string): string =>
   s.length > MAX_SQL_CHARS ? `${s.slice(0, MAX_SQL_CHARS)}\n-- …(truncated ${s.length - MAX_SQL_CHARS} chars for review)` : s;
 
-/** Resolve the Qodo CLI's JS entrypoint from the installed @qodo/command package. */
+/**
+ * Resolve the Qodo CLI's JS entrypoint from the installed @qodo/command package.
+ *
+ * We cannot `require.resolve("@qodo/command/package.json")` — @qodo/command ships
+ * an `exports` map that does NOT expose the `./package.json` subpath, so that
+ * throws `Package subpath './package.json' is not defined by "exports"` and the
+ * review silently degrades to "skipped". Instead resolve the package's `.`
+ * export (which IS allowed), then walk up to the nearest package.json that
+ * belongs to @qodo/command and read its `bin` from disk.
+ *
+ * Resolution is also anchored to a few bases: the module's own url first, then
+ * `<cwd>/packages/qodo` (the workspace package that declares the dep — where the
+ * bundled Next server can't see its own source location), then the cwd. The
+ * first base that resolves wins.
+ */
 function resolveQodoEntry(): string | null {
+  const bases: NodeJS.Require[] = [];
+  const addBase = (from: string) => {
+    try {
+      bases.push(createRequire(from));
+    } catch {
+      /* non-resolvable base — skip */
+    }
+  };
   try {
-    const req = createRequire(import.meta.url);
-    const pkgPath = req.resolve("@qodo/command/package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { bin?: string | Record<string, string> };
-    const binRel =
-      typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.qodo ?? Object.values(pkg.bin ?? {})[0];
-    if (!binRel) return null;
-    return resolvePath(dirname(pkgPath), binRel);
+    addBase(import.meta.url);
   } catch {
-    return null;
+    /* import.meta unavailable in some bundlers — fall through to cwd anchors */
   }
+  addBase(resolvePath(process.cwd(), "packages/qodo/package.json"));
+  addBase(resolvePath(process.cwd(), "package.json"));
+
+  for (const req of bases) {
+    try {
+      // The `.` export resolves; package.json subpath does not (exports map).
+      const mainEntry = req.resolve("@qodo/command");
+      let dir = dirname(mainEntry);
+      for (let i = 0; i < 8; i++) {
+        const pkgPath = resolvePath(dir, "package.json");
+        if (existsSync(pkgPath)) {
+          const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
+            name?: string;
+            bin?: string | Record<string, string>;
+          };
+          if (pkg.name === "@qodo/command") {
+            const binRel =
+              typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.qodo ?? Object.values(pkg.bin ?? {})[0];
+            return binRel ? resolvePath(dir, binRel) : null;
+          }
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    } catch {
+      /* try the next base */
+    }
+  }
+  return null;
 }
 
 function buildPrompt(input: QodoReviewInput): string {
@@ -178,6 +224,18 @@ export async function reviewMigration(input: QodoReviewInput): Promise<QodoRevie
       windowsHide: true,
       env: { ...process.env, QODO_API_KEY: apiKey },
     });
+    // Qodo discontinued the Command CLI (2026): it now prints a notice and
+    // exits 0 instead of reviewing. Detect that so the UI shows an honest,
+    // actionable message rather than "no parseable verdict". PR review moved to
+    // the Qodo GitHub App (https://app.qodo.ai) — see README "Qodo review".
+    if (/qodo\s+command\s+has\s+been\s+discontinued/i.test(stdout)) {
+      return {
+        verdict: "skipped",
+        summary:
+          "Qodo Command CLI has been discontinued — in-app SQL review is unavailable. Use the Qodo GitHub App (app.qodo.ai) for automatic PR reviews.",
+        findings: [],
+      };
+    }
     const parsed = extractJson(stdout) as Record<string, unknown> | null;
     if (!parsed) {
       return {

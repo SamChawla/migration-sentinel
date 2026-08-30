@@ -11,6 +11,11 @@ import {
   DuplicatePrError,
 } from "@sentinel/db/queries";
 import { runAgentPipeline, createGithubClient, GithubApiError } from "@sentinel/agent";
+// splitUpDownSql is the SQL-aware splitter: it splits a one-file migration into
+// up/down at a `-- sentinel:down` / `-- migrate:down` / `-- +goose Down` marker
+// while ignoring marker-looking text inside strings, dollar-quoted PL/pgSQL
+// bodies, quoted identifiers, and block comments (shares splitStatements' lexer).
+import { splitUpDownSql } from "@sentinel/shadow";
 import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
@@ -73,6 +78,7 @@ export async function POST(req: Request) {
   } | null = null;
   let effectiveTitle = title;
   let effectiveUpSql = upSql;
+  let effectiveDownSql = "";
   if (isPrIntake) {
     const token = process.env.GITHUB_TOKEN?.trim();
     if (!token) {
@@ -105,9 +111,16 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      effectiveUpSql = await gh.getFileContents(repo, filePath, pr.headSha);
-      if (!effectiveUpSql.trim()) {
+      const fileSql = await gh.getFileContents(repo, filePath, pr.headSha);
+      if (!fileSql.trim()) {
         return NextResponse.json({ error: `"${filePath}" is empty at the PR head.` }, { status: 400 });
+      }
+      // A PR file MAY carry both halves via a `-- migrate:down` / `-- +goose Down`
+      // / `-- sentinel:down` marker; split so the down is analyzed for the
+      // rollback proof. No marker → down stays empty (down-less behavior).
+      ({ up: effectiveUpSql, down: effectiveDownSql } = splitUpDownSql(fileSql));
+      if (!effectiveUpSql.trim()) {
+        return NextResponse.json({ error: `"${filePath}" has no up migration at the PR head.` }, { status: 400 });
       }
       effectiveTitle = title || `${pr.title} — ${filePath.split("/").pop()}`;
       prMeta = {
@@ -145,7 +158,9 @@ export async function POST(req: Request) {
       title: effectiveTitle,
       targetDb,
       upSql: effectiveUpSql,
-      downSql: prMeta ? "" : downSql,
+      // PR intake: the down parsed from the file's `-- sentinel:down` section
+      // (empty when absent). Non-PR intake keeps the client-supplied downSql.
+      downSql: prMeta ? effectiveDownSql : downSql,
       intent,
       pr: prMeta
         ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }

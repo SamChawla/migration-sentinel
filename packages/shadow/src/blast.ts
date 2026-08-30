@@ -184,6 +184,111 @@ export function splitStatements(sql: string): string[] {
   return statements;
 }
 
+/** Matches a WHOLE line comment that is a migration down-section marker:
+ *  `-- sentinel:down`, dbmate `-- migrate:down`, goose `-- +goose Down`, or a
+ *  bare `-- down`. The comment must contain ONLY the marker (…\s*$), so a
+ *  descriptive `-- Down migration (for reference)` never matches. */
+const DOWN_SECTION_MARKER = /^\s*--+\s*(?:sentinel:down|migrate:down|\+goose\s+down|down)\s*$/i;
+
+/**
+ * Split a single migration file into its up/down halves at the FIRST top-level
+ * down-section marker (see DOWN_SECTION_MARKER). This shares the same
+ * string / dollar-quote / quoted-identifier / nested-block-comment awareness as
+ * splitStatements, so a `-- down` line INSIDE a PL/pgSQL `$$ … $$` body, an
+ * ordinary string, a `"quoted identifier"`, or a `/* … *\/` block comment is
+ * NOT mistaken for the section delimiter — only a syntactically active
+ * top-level line comment splits.
+ *
+ * The original SQL slices are preserved verbatim (only surrounding whitespace is
+ * trimmed) rather than filtered/rejoined line-by-line. With no marker the whole
+ * input is the up and the down is empty.
+ */
+export function splitUpDownSql(sql: string): { up: string; down: string } {
+  let i = 0;
+  const n = sql.length;
+  while (i < n) {
+    const ch = sql[i];
+    const two = sql.slice(i, i + 2);
+
+    if (two === "--") {
+      const nl = sql.indexOf("\n", i);
+      const end = nl === -1 ? n : nl;
+      if (DOWN_SECTION_MARKER.test(sql.slice(i, end))) {
+        const lineStart = sql.lastIndexOf("\n", i) + 1; // start of the marker line
+        const up = sql.slice(0, lineStart).replace(/\s+$/, "");
+        const down = (nl === -1 ? "" : sql.slice(nl + 1)).trim();
+        return { up, down };
+      }
+      i = end;
+      continue;
+    }
+    if (two === "/*") {
+      let depth = 1;
+      i += 2;
+      while (i < n && depth > 0) {
+        const pair = sql.slice(i, i + 2);
+        if (pair === "/*") {
+          depth++;
+          i += 2;
+        } else if (pair === "*/") {
+          depth--;
+          i += 2;
+        } else {
+          i++;
+        }
+      }
+      continue;
+    }
+    if (ch === "'") {
+      const prev = i > 0 ? sql[i - 1] : "";
+      const prev2 = i > 1 ? sql[i - 2] : "";
+      const isEString = (prev === "e" || prev === "E") && !/[A-Za-z0-9_]/.test(prev2);
+      i++;
+      while (i < n) {
+        if (isEString && sql[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "'" && sql[i + 1] === "'") {
+          i += 2;
+          continue;
+        }
+        if (sql[i] === "'") {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      i++;
+      while (i < n) {
+        if (sql[i] === '"' && sql[i + 1] === '"') {
+          i += 2;
+          continue;
+        }
+        if (sql[i] === '"') {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (ch === "$") {
+      const tag = sql.slice(i).match(/^\$[A-Za-z_0-9]*\$/)?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, i + tag.length);
+        i = end === -1 ? n : end + tag.length;
+        continue;
+      }
+    }
+    i++;
+  }
+  return { up: sql.replace(/\s+$/, ""), down: "" };
+}
+
 /** Blank the contents of string/dollar-quoted literals AND double-quoted
  *  identifiers so keyword checks never match text INSIDE them (e.g. the word
  *  WHERE in a string value, or a column literally named "WHERE" — either of
