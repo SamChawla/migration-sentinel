@@ -46,7 +46,7 @@
     <text class="lbl" x="128" y="261" fill="#f0b429">HUMAN GATE <tspan class="sub" fill="#c9922e">&#183; the agent pauses; a human decides</tspan></text>
   </g>
 
-  <g class="step s7"><circle class="dot am" cx="64" cy="296" r="7"/><text class="lbl" x="92" y="301" fill="#f0b429">export PR + merge <tspan class="sub" fill="#c9922e">&#183; prod gate 2 &#183; verdict posted on the PR</tspan></text></g>
+  <g class="step s7"><circle class="dot am" cx="64" cy="296" r="7"/><text class="lbl" x="92" y="301" fill="#f0b429">export PR + merge <tspan class="sub" fill="#c9922e">&#183; prod + linked repo &#183; gate 2 &#183; a human merges</tspan></text></g>
   <g class="step s8"><circle class="dot gr" cx="64" cy="336" r="7"/><text class="lbl" x="92" y="341">guarded apply <tspan class="sub">&#183; lock/statement timeout, one txn, auto-rollback</tspan></text></g>
   <g class="step s9"><circle class="dot gr" cx="64" cy="376" r="7"/><text class="lbl" x="92" y="381">audit <tspan class="sub">&#183; apply_run + append-only log</tspan></text></g>
 

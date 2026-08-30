@@ -74,7 +74,7 @@ The model **proposes**; deterministic policy **disposes**. The severity, the rol
 
 ## The pipeline
 
-Every request travels the same path. The agent orchestrates it and then **physically pauses** at the gate — the apply tool cannot run until a human decision is recorded in our own database. For a prod-bound change on a linked repo, approval **exports a PR** instead of applying, and the human **merge** of that PR is a second gate.
+Every request travels the same path. The agent orchestrates it and then **physically pauses** at the gate — the apply tool cannot run until a human decision is recorded in our own database. For a prod-bound change **on a linked repo with a configured `GITHUB_TOKEN`**, approval **exports a PR** instead of applying, and the human **merge** of that PR is a second gate; without that (non-prod, no linked repo, or no token) approval drives the guarded apply directly through the single gate.
 
 ```mermaid
 flowchart TD
@@ -94,13 +94,13 @@ flowchart TD
     DIS -- blocked --> X[⛔ Refused — no approval can override]
     DIS -- auto / approval / typed_confirm --> GATE[⏸ Approval Console]
     GATE -- reject --> STOP[Clean stop]
-    GATE -- approve --> PROD{Prod + linked repo?}
-    PROD -- yes --> EXP[Export PR: up.sql · down.sql · report.md]
-    EXP --> MERGE[⏸ Human merges the PR on GitHub — gate 2]
+    GATE -- approve --> PROD{Prod + linked repo + GITHUB_TOKEN?}
+    PROD -->|yes| EXP[Export PR: up.sql · down.sql · report.md]
+    EXP --> MERGE[⏸ Human merges the export PR on GitHub — gate 2]
     MERGE -- merge verified live --> APPLY
-    PROD -- no --> APPLY[Guarded apply: lock_timeout + statement_timeout, txn, auto-rollback]
+    PROD -->|no / non-prod| APPLY[Guarded apply: lock_timeout + statement_timeout, txn, auto-rollback]
     APPLY --> AUD[apply_run + audit]
-    AUD --> PROM[Promote one rung up the ladder<br/>dev → staging → prod · same SQL, full re-analysis, stricter gate]
+    AUD --> PROM[Promote one rung up the ladder<br/>local → dev → staging → prod · same SQL, full re-analysis, stricter gate]
 ```
 
 ## The gate — four dispositions
@@ -143,11 +143,13 @@ ladder is runnable end-to-end.
 
 **GitHub PR intake + a two-gate export.** Point Sentinel at a PR that changes a `.sql`
 file: it re-reads the file **server-side at the PR head SHA** (never trusting SQL the
-browser sends), analyzes it, and can post the verdict back as a PR comment. For a
-prod-bound change on a linked repo, approving at the Sentinel gate **exports** the
+browser sends), analyzes it, and — as a separate, operator-triggered action — can post
+the verdict back as a comment on that PR. For a prod-bound change on a linked repo
+**when a `GITHUB_TOKEN` is configured**, approving at the Sentinel gate **exports** the
 migration as a pull request (`up.sql` / `down.sql` / `report.md`) instead of applying;
 the **merge** of that PR — a human action on GitHub — is gate 2, and only a
-live-verified merge unlocks the guarded apply. `pnpm sample:pr <owner/repo>` opens a
+live-verified merge unlocks the guarded apply. Without a linked repo or token, a prod
+approval falls through to the guarded apply behind the single gate. `pnpm sample:pr <owner/repo>` opens a
 ready-made sample PR (a green index + a red drop) to exercise this path.
 
 **Retry.** A run that **fails** before the gate — or is genuinely **stranded** in a
@@ -169,7 +171,7 @@ flowchart LR
     end
     subgraph Targets
         SHADOW[(shadow-db<br/>ephemeral clone)]
-        TARGET[(target dbs · ladder<br/>dev · staging · prod<br/>read-only until apply)]
+        TARGET[(target dbs · ladder<br/>local · dev · staging · prod<br/>read-only until apply)]
     end
     subgraph Integrations
         TF[TrueForge server<br/>session · turn · tool-approval]
@@ -196,7 +198,7 @@ Normalized state in our own Postgres (Drizzle). The `audit_event` table is appen
 
 ```mermaid
 erDiagram
-    target_database ||--o{ migration_request : "targets (env: dev/staging/prod)"
+    target_database ||--o{ migration_request : "targets (env: local/dev/staging/prod)"
     migration_request ||--o{ generated_artifact : has
     migration_request ||--|| approval : "gated by"
     migration_request ||--o| github_link : "PR intake + export gate"
