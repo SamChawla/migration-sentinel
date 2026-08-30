@@ -245,6 +245,13 @@ h3 { font-size: 15px; }
 }
 .btn-cyan:hover { background: var(--cyan-deep); }
 
+/* Destructive action — outlined until hover so it never competes with the
+   primary action, then fills red to signal the consequence. */
+.btn-danger {
+  background: transparent; border-color: var(--danger); color: var(--danger);
+}
+.btn-danger:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+
 .btn-apply {
   background: var(--mat-apply); border: none; color: #3A0D0D; font-weight: 700;
   letter-spacing: .06em; text-transform: uppercase; font-size: 14px;

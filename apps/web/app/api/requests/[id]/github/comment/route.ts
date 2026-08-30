@@ -43,6 +43,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
+  // The verdict comment is read by people on a PUBLIC PR, so the console link
+  // must be a reachable base URL — not the server's own origin, which is
+  // http://localhost:3000 in dev and an internal host behind a proxy. Prefer the
+  // configured APP_BASE_URL; fall back to the request origin for local use.
+  const baseUrl = process.env.APP_BASE_URL?.trim().replace(/\/+$/, "") || new URL(req.url).origin;
+
   const body = buildVerdictComment({
     requestId: rec.id,
     title: rec.title,
@@ -53,7 +59,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     rowsAffected: rec.rowsAffected,
     findings: rec.findings.map((f) => ({ statement: f.statement, severity: f.severity, note: f.note })),
     qodo: { verdict: rec.qodoVerdict, findings: rec.qodoFindings },
-    consoleUrl: `${new URL(req.url).origin}/requests/${rec.id}`,
+    consoleUrl: `${baseUrl}/requests/${rec.id}`,
   });
 
   try {

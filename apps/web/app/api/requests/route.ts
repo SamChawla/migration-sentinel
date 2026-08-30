@@ -7,6 +7,7 @@ import {
   getRequest,
   setRequestStatus,
   insertAuditEvent,
+  findOpenDuplicatePrRequest,
 } from "@sentinel/db/queries";
 import { runAgentPipeline, createGithubClient, GithubApiError } from "@sentinel/agent";
 import { getSession } from "@/lib/auth";
@@ -114,6 +115,23 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: e.message, code: "github_error" }, { status: e.status === 404 ? 404 : 502 });
       }
       throw e;
+    }
+
+    // De-dup: refuse a second copy of the SAME PR file @ same head, same target,
+    // while an earlier one is still open. Promotion across targets (dev → prod)
+    // stays allowed because this is scoped to `targetDb`.
+    const dup = await findOpenDuplicatePrRequest({
+      targetDb, repo, prNumber, filePath, headSha: prMeta.headSha,
+    });
+    if (dup) {
+      return NextResponse.json(
+        {
+          error: `${repo}#${prNumber} (${filePath}) @ ${prMeta.headSha.slice(0, 8)} is already queued for ${targetDb} as "${dup.title}" (${dup.status}). Open that request instead of adding it again.`,
+          code: "duplicate",
+          existingId: dup.id,
+        },
+        { status: 409 },
+      );
     }
   }
 

@@ -286,6 +286,7 @@ pnpm typecheck                       # packages + web app
 | `ANTHROPIC_API_KEY` | The model-provider key the TrueForge server uses to generate SQL |
 | `QODO_API_KEY` | In-app Qodo CLI review (unset → review is skipped, pipeline still runs) |
 | `GITHUB_TOKEN` | GitHub PR intake, verdict comments, and the export-PR gate (`repo` scope); also used by `pnpm sample:pr` |
+| `APP_BASE_URL` | Public console URL used in the PR verdict comment's "open in console" link (unset → the request origin, i.e. localhost in dev) |
 | `EURON_API_KEY` | The read-only "Ask about this migration" copilot (OpenAI-compatible / Euron; unset → copilot disabled) |
 | `EURON_BASE_URL` · `EURON_MODEL` | Copilot endpoint + model (default `…/api/v1/euri`, `gpt-4.1-nano`) |
 | `NEXT_PUBLIC_DEMO_TOKEN` | Demo only — pre-fills the login token for one-click "Login to Console". Leave unset in production |

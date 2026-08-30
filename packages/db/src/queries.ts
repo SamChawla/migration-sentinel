@@ -4,7 +4,7 @@
  * Every function here returns the flat shapes the UI already expects
  * (RequestRecord, AuditEventRow) by JOINing across the normalized tables.
  */
-import { eq, asc, desc, sql, and, or, inArray, ilike } from "drizzle-orm";
+import { eq, asc, desc, sql, and, or, inArray, notInArray, ilike } from "drizzle-orm";
 import { db } from "./client";
 import {
   targetDatabase,
@@ -481,6 +481,58 @@ export async function createRequest(input: CreateRequestInput): Promise<RequestR
 
   const record = await getRequest(reqId);
   return record!;
+}
+
+// A migration is "open" (not yet resolved) in any status other than these four
+// terminal ones. Re-submitting the SAME PR file while an open copy exists is a
+// duplicate; once a copy is applied/rejected/rolled_back/failed, a fresh run is
+// legitimate (e.g. re-analyze after fixing the data).
+const TERMINAL_STATUSES: RequestStatus[] = ["applied", "rejected", "rolled_back", "failed"];
+
+/**
+ * Find an OPEN (non-terminal) migration request that is the same GitHub PR file,
+ * at the same head commit, aimed at the same target — the signature of a
+ * duplicate PR intake. Scoped to one target so promoting the same PR across
+ * environments (dev → staging → prod) is NOT flagged. Returns the existing
+ * request's id + title so the caller can point the user at it.
+ */
+export async function findOpenDuplicatePrRequest(input: {
+  targetDb: string;
+  repo: string;
+  prNumber: number;
+  filePath: string;
+  headSha: string;
+}): Promise<{ id: string; title: string; status: RequestStatus } | null> {
+  const rows = await db
+    .select({ id: migrationRequest.id, title: migrationRequest.title, status: migrationRequest.status })
+    .from(migrationRequest)
+    .innerJoin(targetDatabase, eq(migrationRequest.targetDatabaseId, targetDatabase.id))
+    .where(
+      and(
+        eq(targetDatabase.connectionAlias, input.targetDb),
+        eq(migrationRequest.intakeKind, "github_pr"),
+        sql`${migrationRequest.intakePayload}->'pr'->>'repo' = ${input.repo}`,
+        sql`(${migrationRequest.intakePayload}->'pr'->>'prNumber')::int = ${input.prNumber}`,
+        sql`${migrationRequest.intakePayload}->'pr'->>'file' = ${input.filePath}`,
+        sql`${migrationRequest.intakePayload}->'pr'->>'headSha' = ${input.headSha}`,
+        notInArray(migrationRequest.status, TERMINAL_STATUSES),
+      ),
+    )
+    .orderBy(desc(migrationRequest.createdAt))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Hard-delete a migration request and everything hanging off it. The FK graph
+ * cascades (artifacts, shadow/apply runs, blast/preflight, approval, github
+ * link); audit rows are kept (their FK is ON DELETE SET NULL) so the trail
+ * survives. Returns false if the id didn't exist. Callers MUST guard against
+ * deleting a request whose apply is mid-flight.
+ */
+export async function deleteRequest(id: string): Promise<boolean> {
+  const res = await db.delete(migrationRequest).where(eq(migrationRequest.id, id));
+  return (res.rowCount ?? 0) > 0;
 }
 
 /**

@@ -16,6 +16,7 @@ import { StatReadout, EnergyProgressBar } from "@/components/instruments/Readout
 import { SqlWell } from "@/components/console/SqlWell";
 import { CommitConsole } from "@/components/console/CommitConsole";
 import { RetryButton } from "@/components/console/RetryButton";
+import { DeleteRequestButton } from "@/components/console/DeleteRequestButton";
 import { MigrationChat } from "@/components/console/MigrationChat";
 import { SchemaErd, type SceneTable, type FkEdge } from "@/components/scene/SchemaErd";
 import { AutoRefresh } from "@/components/AutoRefresh";
@@ -371,6 +372,9 @@ export default async function ApprovalConsole({ params }: { params: Promise<{ id
             <EnvBadge env={r.environment} />
           </span>
           <StatusChip status={r.status} />
+          {r.status !== "applying" && (
+            <DeleteRequestButton requestId={r.id} title={r.title} size="sm" redirectTo="/requests" />
+          )}
         </span>
       </div>
 
