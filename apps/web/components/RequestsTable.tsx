@@ -2,6 +2,7 @@ import Link from "next/link";
 import type { RequestRecord } from "@sentinel/db/queries";
 import { SeverityChip, StatusChip } from "@/components/chips";
 import { EnvBadge } from "@/components/EnvBadge";
+import { RetryButton } from "@/components/console/RetryButton";
 import { timeAgo } from "@/lib/format";
 
 const FILTERS = [
@@ -137,7 +138,12 @@ export function RequestsTable({
                 </td>
                 <td><StatusChip status={r.status} /></td>
                 <td style={{ color: "var(--faint)", fontSize: 12 }} suppressHydrationWarning>{timeAgo(r.createdAt)}</td>
-                <td><Link href={`/requests/${r.id}`} style={{ fontSize: 12, color: "var(--cyan)" }}>Review</Link></td>
+                <td>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                    <Link href={`/requests/${r.id}`} style={{ fontSize: 12, color: "var(--cyan)" }}>Review</Link>
+                    {r.status === "failed" && <RetryButton requestId={r.id} size="sm" label="Retry" />}
+                  </span>
+                </td>
               </tr>
             ))}
             {records.length === 0 && (

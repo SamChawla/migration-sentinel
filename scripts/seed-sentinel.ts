@@ -103,6 +103,16 @@ async function main() {
     connectionUrl: process.env.STAGING_DB_URL ?? "postgres://postgres:postgres@localhost:5436/staging",
   }).returning();
 
+  const [devTarget] = await tx.insert(targetDatabase).values({
+    name: "Dev Orders DB",
+    engine: "postgres",
+    connectionAlias: "dev-orders-db",
+    environment: "dev",
+    // The lowest runnable rung — start a change here, prove it, promote upward.
+    // Its OWN URL for the same reason staging has one (no prod fallback).
+    connectionUrl: process.env.DEV_DB_URL ?? "postgres://postgres:postgres@localhost:5437/dev",
+  }).returning();
+
   // ── Helper to make timestamps ─────────────────────────────────────────
   const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
 
@@ -799,6 +809,156 @@ async function main() {
     createdAt: hoursAgo(3),
   });
 
+  // ── Migration 9: Add phone to users on DEV — APPLIED (promotable) ─────
+  // A change that started on the LOWEST rung and landed. Its own promotion
+  // group with no higher-env sibling yet, so the console shows a live
+  // "Promote to staging" action — the dev → staging → prod ladder from the
+  // bottom, the counterpart to Migration 2 which starts at staging.
+  console.log("→ Seeding migration: Add phone to users (dev, applied)…");
+  const promoGroup9 = crypto.randomUUID();
+  const PHONE_UP = "ALTER TABLE public.users ADD COLUMN phone text;";
+  const PHONE_DOWN = "ALTER TABLE public.users DROP COLUMN phone;";
+
+  const [req9] = await tx.insert(migrationRequest).values({
+    targetDatabaseId: devTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: PHONE_UP },
+    title: "Add phone to users",
+    status: "applied",
+    requestedBy: "priya@acme.io",
+    promotionGroupId: promoGroup9,
+    createdAt: hoursAgo(4),
+    updatedAt: hoursAgo(3.8),
+  }).returning();
+
+  const [art9] = await tx.insert(generatedArtifact).values({
+    migrationRequestId: req9.id,
+    version: 1,
+    upSql: PHONE_UP,
+    downSql: PHONE_DOWN,
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(4),
+  }).returning();
+
+  await tx.insert(qodoReview).values({
+    generatedArtifactId: art9.id,
+    verdict: "passed",
+    findings: [],
+  });
+
+  const [shadow9] = await tx.insert(shadowRun).values({
+    migrationRequestId: req9.id,
+    generatedArtifactId: art9.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    createdAt: hoursAgo(4),
+  }).returning();
+
+  const [blast9] = await tx.insert(blastReport).values({
+    shadowRunId: shadow9.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 4,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(4),
+  }).returning();
+
+  await tx.insert(blastFinding).values({
+    blastReportId: blast9.id,
+    statementIndex: 0,
+    statementSql: "ALTER TABLE users ADD COLUMN phone text",
+    severity: "green",
+    note: "Metadata-only in Postgres 11+.",
+  });
+
+  await tx.insert(approval).values({
+    migrationRequestId: req9.id,
+    decision: "approved",
+    approver: "sam.chawla26@gmail.com",
+    decidedAt: hoursAgo(3.8),
+    createdAt: hoursAgo(4),
+  });
+
+  await tx.insert(applyRun).values({
+    migrationRequestId: req9.id,
+    status: "succeeded",
+    lockTimeoutMs: 3000,
+    statementTimeoutMs: 30000,
+    rollbackAvailable: true,
+    appliedAt: hoursAgo(3.8),
+    logs: "SET lock_timeout=3000ms statement_timeout=30000ms | BEGIN | COMMIT — migration applied on dev.",
+    createdAt: hoursAgo(3.8),
+  });
+
+  // ── Migration 10: Index users(email) on DEV — AWAITING_APPROVAL ───────
+  // A green, reversible change sitting at the gate ON DEV, so the demo has a
+  // live "approve & apply" beat at the lowest rung (not only on prod).
+  console.log("→ Seeding migration: Index users(email) (dev, awaiting)…");
+  const EMAIL_UP = "CREATE INDEX CONCURRENTLY idx_users_email ON public.users (email);";
+  const EMAIL_DOWN = "DROP INDEX CONCURRENTLY IF EXISTS idx_users_email;";
+
+  const [req10] = await tx.insert(migrationRequest).values({
+    targetDatabaseId: devTarget.id,
+    intakeKind: "raw_sql",
+    intakePayload: { sql: EMAIL_UP },
+    title: "Index users(email) CONCURRENTLY",
+    status: "awaiting_approval",
+    requestedBy: "dev@acme.io",
+    createdAt: hoursAgo(0.3),
+    updatedAt: hoursAgo(0.3),
+  }).returning();
+
+  const [art10] = await tx.insert(generatedArtifact).values({
+    migrationRequestId: req10.id,
+    version: 1,
+    upSql: EMAIL_UP,
+    downSql: EMAIL_DOWN,
+    reversibility: "reversible",
+    model: "claude-sonnet-4-20250514",
+    createdAt: hoursAgo(0.3),
+  }).returning();
+
+  await tx.insert(qodoReview).values({
+    generatedArtifactId: art10.id,
+    verdict: "passed",
+    findings: [],
+  });
+
+  const [shadow10] = await tx.insert(shadowRun).values({
+    migrationRequestId: req10.id,
+    generatedArtifactId: art10.id,
+    status: "succeeded",
+    rollbackVerified: true,
+    startedAt: hoursAgo(0.3),
+    finishedAt: hoursAgo(0.28),
+    createdAt: hoursAgo(0.3),
+  }).returning();
+
+  const [blast10] = await tx.insert(blastReport).values({
+    shadowRunId: shadow10.id,
+    overallSeverity: "green",
+    totalRowsAffected: 0,
+    estLockMs: 8,
+    tablesTouched: ["public.users"],
+    createdAt: hoursAgo(0.3),
+  }).returning();
+
+  await tx.insert(blastFinding).values({
+    blastReportId: blast10.id,
+    statementIndex: 0,
+    statementSql: "CREATE INDEX CONCURRENTLY",
+    severity: "green",
+    note: "Non-blocking index build.",
+  });
+
+  await tx.insert(approval).values({
+    migrationRequestId: req10.id,
+    decision: "pending",
+    requiresTypedConfirm: false,
+    createdAt: hoursAgo(0.3),
+  });
+
   // ── Audit events ──────────────────────────────────────────────────────
   console.log("→ Seeding audit events…");
   await tx.insert(auditEvent).values([
@@ -816,6 +976,8 @@ async function main() {
     { migrationRequestId: req7.id, actor: "agent", action: "gate.blocked", detail: "BLOCKED — unbounded DELETE destroys the whole table with no recovery path. Sentinel refuses to apply; approval cannot override.", tone: "red" as const, createdAt: hoursAgo(0.2) },
     { migrationRequestId: req8.id, actor: "sam.chawla26@gmail.com", action: "approval.approved", detail: "Approved — handing to the export gate (prod + linked repo).", tone: "green" as const, createdAt: hoursAgo(2.5) },
     { migrationRequestId: req8.id, actor: "sentinel.gate", action: "export.pr_opened", detail: "Exported to SamChawla/sentinel-demo-app#4 — awaiting the source-of-truth merge (gate 2). No apply has run.", tone: "info" as const, createdAt: hoursAgo(2.5) },
+    { migrationRequestId: req9.id, actor: "sam.chawla26@gmail.com", action: "apply.succeeded", detail: "Applied on dev — metadata-only column add. Ready to promote to staging.", tone: "green" as const, createdAt: hoursAgo(3.8) },
+    { migrationRequestId: req10.id, actor: "agent", action: "gate.paused", detail: "GREEN verdict on dev — non-blocking CONCURRENTLY build. Awaiting approval.", tone: "info" as const, createdAt: hoursAgo(0.3) },
   ]);
 
   // ── Summary ───────────────────────────────────────────────────────────

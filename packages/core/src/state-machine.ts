@@ -24,11 +24,14 @@ const TRANSITIONS: Record<RequestStatus, RequestStatus[]> = {
   rejected: [],
   applying: ["applied", "failed"],
   applied: ["rolled_back"],
-  // Terminal: `failed` is reachable from pre-apply states (generating/reviewing/
-  // dry_running) where nothing was applied, so it must NOT permit rolled_back.
-  // An apply that fails already rolls back inside its own transaction; a manual
-  // revert of an APPLIED migration uses applied → rolled_back.
-  failed: [],
+  // `failed` is reachable from pre-apply states (generating/reviewing/dry_running)
+  // where nothing was applied, so it must NOT permit rolled_back — an apply that
+  // fails already rolls back inside its own transaction; a manual revert of an
+  // APPLIED migration uses applied → rolled_back. The ONE forward edge is an
+  // explicit operator RETRY (failed → received), which re-enters intake and
+  // re-runs the full analysis pipeline from scratch. Nothing was applied, so
+  // re-analyzing is always safe.
+  failed: ["received"],
   rolled_back: [],
 };
 

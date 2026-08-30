@@ -854,6 +854,80 @@ export async function claimRequestForPipeline(requestId: string): Promise<boolea
   return rows.length === 1;
 }
 
+/** States a stranded pipeline can sit in — a crash/restart between claim and the
+ *  failure handler can leave a request here with no running worker. */
+const RETRYABLE_STUCK: RequestStatus[] = ["received", "generating", "reviewing", "dry_running"];
+
+export type RetryOutcome =
+  | { ok: true; from: RequestStatus }
+  | { ok: false; reason: "not_found" | "not_retryable" | "in_progress" };
+
+/**
+ * Reset a request so the analysis pipeline can re-run from scratch, then leave it
+ * in 'received' for the caller to re-enqueue via runAgentPipeline. Nothing was
+ * ever applied for a retryable request, so re-analyzing is always safe.
+ *
+ * Eligibility:
+ *  - `failed` → always (the terminal-with-one-forward-edge retry, state-machine).
+ *  - a stuck pre-apply state (received/generating/reviewing/dry_running) → only
+ *    when it has been untouched for `staleMs` (default 2 min), so a genuinely
+ *    running pipeline is never yanked out from under itself. A fresh in-flight
+ *    request returns `in_progress` instead.
+ *
+ * The reset also disarms the approval gate (decision→pending, typed-confirm
+ * cleared) so the re-run re-arms it honestly from the new analysis.
+ */
+export async function retryRequest(
+  requestId: string,
+  opts: { staleMs?: number; actor?: string } = {},
+): Promise<RetryOutcome> {
+  const staleMs = opts.staleMs ?? 2 * 60_000;
+  return await db.transaction(async (tx) => {
+    const [cur] = await tx
+      .select({ status: migrationRequest.status, updatedAt: migrationRequest.updatedAt })
+      .from(migrationRequest)
+      .where(eq(migrationRequest.id, requestId))
+      .for("update")
+      .limit(1);
+    if (!cur) return { ok: false, reason: "not_found" } as const;
+
+    const status = cur.status as RequestStatus;
+    const isFailed = status === "failed";
+    const isStuck = RETRYABLE_STUCK.includes(status);
+    if (!isFailed && !isStuck) return { ok: false, reason: "not_retryable" } as const;
+    if (isStuck) {
+      const ageMs = Date.now() - (cur.updatedAt?.getTime() ?? 0);
+      if (ageMs < staleMs) return { ok: false, reason: "in_progress" } as const;
+    }
+
+    // Conditional flip guarded on the OBSERVED status (the FOR UPDATE lock holds
+    // it, but keep the guard so the intent is explicit and the UPDATE is a no-op
+    // if anything slipped past).
+    const moved = await tx
+      .update(migrationRequest)
+      .set({ status: "received", updatedAt: new Date() })
+      .where(and(eq(migrationRequest.id, requestId), eq(migrationRequest.status, status)))
+      .returning({ id: migrationRequest.id });
+    if (moved.length !== 1) return { ok: false, reason: "in_progress" } as const;
+
+    await tx
+      .update(approval)
+      .set({ decision: "pending", approver: null, decidedAt: null, requiresTypedConfirm: false, expectedConfirmValue: null })
+      .where(eq(approval.migrationRequestId, requestId));
+
+    await tx.insert(auditEvent).values({
+      migrationRequestId: requestId,
+      actor: opts.actor ?? "unknown",
+      action: "request.retried",
+      detail: `Retry requested from '${status}' — re-running the full analysis pipeline.`,
+      tone: "info",
+      payload: { fromStatus: status },
+    });
+
+    return { ok: true, from: status } as const;
+  });
+}
+
 // ── Promotion (environment ladder) ───────────────────────────────────────
 
 export interface PromotionGroupRow {
