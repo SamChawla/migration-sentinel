@@ -51,6 +51,8 @@ zerops:
         # SHADOW_ADMIN_URL keeps the PostgreSQL service SUPERUSER, since only
         # ephemeral clone CREATE/DROP needs cluster-wide privileges. `db` = the
         # hostname of your PostgreSQL service; rename both if named differently.
+        # APP_DB_PASSWORD is interpolated below unencoded, so it MUST be
+        # URL-safe (letters, digits, . _ ~ - only) — see zerops-project-import.yml.
         APP_DB_PASSWORD: ${APP_DB_PASSWORD}
         DATABASE_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/sentinel
         TARGET_DB_URL: postgres://sentinel_app:${APP_DB_PASSWORD}@${db_hostname}:${db_port}/prod

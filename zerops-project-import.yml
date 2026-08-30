@@ -32,6 +32,10 @@ services:
       APPROVER_TOKEN: change-me
       # Password for the scoped `sentinel_app` role bootstrap creates — owner
       # of sentinel/prod/staging only, never the PostgreSQL superuser.
+      # MUST be URL-safe (letters, digits, . _ ~ - only): zerops.yml embeds it
+      # directly into DATABASE_URL/TARGET_DB_URL/STAGING_DB_URL, unencoded.
+      # Bootstrap refuses to start if it isn't. Generate one with e.g.
+      # `openssl rand -hex 24`.
       APP_DB_PASSWORD: change-me
       ANTHROPIC_API_KEY: sk-ant-...
       TRUEFORGE_BASE_URL: http://localhost:8790

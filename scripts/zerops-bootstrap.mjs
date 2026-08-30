@@ -37,6 +37,29 @@ function dbNameFromUrl(url) {
 
 const APP_ROLE = "sentinel_app";
 
+/** Quotes a value as a PostgreSQL string literal. PASSWORD in CREATE/ALTER ROLE
+ *  is a utility-statement literal position — it does NOT accept bind parameters
+ *  ($1), so this (not query params) is how the password must be interpolated. */
+function quoteLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
+
+/** APP_DB_PASSWORD is embedded directly into DATABASE_URL/TARGET_DB_URL/
+ *  STAGING_DB_URL by zerops.yml BEFORE this script ever runs, so an unsafe
+ *  character (@ / ? # % etc.) breaks URL parsing long before we'd get a chance
+ *  to encode it here. Fail fast with an actionable message instead of a cryptic
+ *  "Invalid URL" from deep inside pg/drizzle. */
+function validateAppDbPassword() {
+  const password = process.env.APP_DB_PASSWORD;
+  if (!password) throw new Error("APP_DB_PASSWORD is required to create the scoped app role.");
+  if (!/^[A-Za-z0-9._~-]+$/.test(password)) {
+    throw new Error(
+      "APP_DB_PASSWORD must be URL-safe (letters, digits, and . _ ~ - only) — it is embedded " +
+        "directly into DATABASE_URL/TARGET_DB_URL/STAGING_DB_URL in zerops.yml, unencoded.",
+    );
+  }
+}
+
 async function ensureDatabases() {
   const adminUrl = process.env.SHADOW_ADMIN_URL;
   if (!adminUrl) throw new Error("SHADOW_ADMIN_URL (superuser @ postgres DB) is required to create databases.");
@@ -72,7 +95,7 @@ async function ensureDatabases() {
         console.log(`• database ${name} already exists`);
       }
     }
-    await ensureAppRole(admin, new Set(scoped));
+    await ensureAppRole(admin, adminUrl, new Set(scoped));
   } finally {
     await admin.end();
   }
@@ -81,20 +104,21 @@ async function ensureDatabases() {
 /**
  * Creates (or re-passwords) the `sentinel_app` login role and makes it owner
  * of sentinel/prod/staging only — never the shadow admin DB or the cluster at
- * large. On PG15+, owning a database also owns its `public` schema (via
- * `pg_database_owner`), so this is enough for drizzle migrate + the agent's
- * apply executor to have full DDL on exactly the three intended databases.
+ * large. `ALTER DATABASE ... OWNER` only reassigns the database (and, via
+ * `pg_database_owner`, the `public` schema) — it does NOT reassign objects a
+ * previous deploy already created there, so on an existing installation we
+ * also reassign those explicitly (grantExistingObjects) or `sentinel_app`
+ * would be locked out of its own tables after this upgrade.
  */
-async function ensureAppRole(admin, dbNames) {
+async function ensureAppRole(admin, adminUrl, dbNames) {
   const password = process.env.APP_DB_PASSWORD;
-  if (!password) throw new Error("APP_DB_PASSWORD is required to create the scoped app role.");
 
   const { rowCount } = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [APP_ROLE]);
   if (rowCount === 0) {
-    await admin.query(`CREATE ROLE ${APP_ROLE} WITH LOGIN PASSWORD $1`, [password]);
+    await admin.query(`CREATE ROLE ${APP_ROLE} WITH LOGIN PASSWORD ${quoteLiteral(password)}`);
     console.log(`✓ created role ${APP_ROLE}`);
   } else {
-    await admin.query(`ALTER ROLE ${APP_ROLE} WITH LOGIN PASSWORD $1`, [password]);
+    await admin.query(`ALTER ROLE ${APP_ROLE} WITH LOGIN PASSWORD ${quoteLiteral(password)}`);
   }
 
   for (const name of dbNames) {
@@ -102,6 +126,35 @@ async function ensureAppRole(admin, dbNames) {
     await admin.query(`ALTER DATABASE "${name}" OWNER TO ${APP_ROLE}`);
   }
   console.log(`✓ ${APP_ROLE} owns: ${[...dbNames].join(", ")}`);
+
+  await grantExistingObjects(adminUrl, dbNames);
+}
+
+/**
+ * Reassigns objects a prior deploy created (as the cluster superuser, before
+ * `sentinel_app` existed) so upgrading an existing installation doesn't lock
+ * the app out of its own tables. `REASSIGN OWNED` only affects the database
+ * you're connected to, so this opens one connection per scoped database
+ * (still authenticating as the superuser from adminUrl — never with
+ * APP_DB_PASSWORD). Idempotent: a no-op once everything is already owned by
+ * `sentinel_app`.
+ */
+async function grantExistingObjects(adminUrl, dbNames) {
+  for (const name of dbNames) {
+    const dbUrl = new URL(adminUrl);
+    dbUrl.pathname = `/${name}`;
+    const client = new pg.Client({ connectionString: dbUrl.toString() });
+    await client.connect();
+    try {
+      await client.query(`REASSIGN OWNED BY CURRENT_USER TO ${APP_ROLE}`);
+      await client.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${APP_ROLE}`);
+      await client.query(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${APP_ROLE}`);
+      await client.query(`GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public TO ${APP_ROLE}`);
+    } finally {
+      await client.end();
+    }
+  }
+  console.log(`✓ ${APP_ROLE} can access pre-existing objects in: ${[...dbNames].join(", ")}`);
 }
 
 async function migrateControlPlane() {
@@ -149,6 +202,7 @@ function seed() {
 }
 
 async function main() {
+  validateAppDbPassword();
   console.log("→ Zerops bootstrap: ensuring databases…");
   await ensureDatabases();
   await migrateControlPlane();
