@@ -15,6 +15,33 @@ import { getSession } from "@/lib/auth";
 
 export const runtime = "nodejs";
 
+/**
+ * Split a single migration `.sql` file into its up and down halves on a
+ * down-section marker comment. Supports the common one-file conventions:
+ *   `-- migrate:down` (dbmate) · `-- +goose Down` (goose) · `-- sentinel:down`
+ * plus a bare `-- down` line. Everything before the marker is the up migration;
+ * everything after is the down. With NO marker the whole file is the up and the
+ * down is empty — the prior behavior — and the rollback proof simply can't be
+ * proven, which the gate policy already handles honestly (no SAFE fast-path).
+ *
+ * This lets a GitHub PR carry a verifiable down so a genuinely reversible
+ * migration can earn the SAFE disposition without a model round-trip.
+ */
+function splitUpDown(sql: string): { up: string; down: string } {
+  const lines = sql.split(/\r?\n/);
+  const downMarker = /^\s*--+\s*(?:sentinel:down|migrate:down|\+goose\s+down|down)\s*$/i;
+  const upMarker = /^\s*--+\s*(?:sentinel:up|migrate:up|\+goose\s+up|up)\s*$/i;
+  const idx = lines.findIndex((l) => downMarker.test(l));
+  if (idx === -1) return { up: sql, down: "" };
+  const up = lines
+    .slice(0, idx)
+    .filter((l) => !upMarker.test(l))
+    .join("\n")
+    .trim();
+  const down = lines.slice(idx + 1).join("\n").trim();
+  return { up, down };
+}
+
 export async function GET() {
   // Migration SQL + target details are not public — require an approver session.
   const session = await getSession();
@@ -73,6 +100,7 @@ export async function POST(req: Request) {
   } | null = null;
   let effectiveTitle = title;
   let effectiveUpSql = upSql;
+  let effectiveDownSql = "";
   if (isPrIntake) {
     const token = process.env.GITHUB_TOKEN?.trim();
     if (!token) {
@@ -105,9 +133,16 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      effectiveUpSql = await gh.getFileContents(repo, filePath, pr.headSha);
-      if (!effectiveUpSql.trim()) {
+      const fileSql = await gh.getFileContents(repo, filePath, pr.headSha);
+      if (!fileSql.trim()) {
         return NextResponse.json({ error: `"${filePath}" is empty at the PR head.` }, { status: 400 });
+      }
+      // A PR file MAY carry both halves via a `-- migrate:down` / `-- +goose Down`
+      // / `-- sentinel:down` marker; split so the down is analyzed for the
+      // rollback proof. No marker → down stays empty (down-less behavior).
+      ({ up: effectiveUpSql, down: effectiveDownSql } = splitUpDown(fileSql));
+      if (!effectiveUpSql.trim()) {
+        return NextResponse.json({ error: `"${filePath}" has no up migration at the PR head.` }, { status: 400 });
       }
       effectiveTitle = title || `${pr.title} — ${filePath.split("/").pop()}`;
       prMeta = {
@@ -145,7 +180,9 @@ export async function POST(req: Request) {
       title: effectiveTitle,
       targetDb,
       upSql: effectiveUpSql,
-      downSql: prMeta ? "" : downSql,
+      // PR intake: the down parsed from the file's `-- sentinel:down` section
+      // (empty when absent). Non-PR intake keeps the client-supplied downSql.
+      downSql: prMeta ? effectiveDownSql : downSql,
       intent,
       pr: prMeta
         ? { url: prMeta.htmlUrl, repo: prMeta.repo, file: prMeta.filePath, prNumber: prMeta.prNumber, headSha: prMeta.headSha }

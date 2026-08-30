@@ -32,6 +32,14 @@ zerops:
         - apps/web/.next/cache
     run:
       base: nodejs@22
+      # Sentinel shells out to `pg_dump` to snapshot the target schema before the
+      # shadow dry-run. The nodejs@22 runtime is Alpine and ships no Postgres
+      # client, so bake the v16 client (matches the PG16 target) into the custom
+      # runtime image — otherwise Analyze fails with `spawn pg_dump ENOENT`. The
+      # runtime-prepare container runs as root, so NO `sudo` (it isn't installed
+      # there; `sudo apk …` fails and silently falls back to the base image).
+      prepareCommands:
+        - apk add --no-cache postgresql16-client
       ports:
         - port: 3000
           httpSupport: true
@@ -41,6 +49,10 @@ zerops:
       initCommands:
         - corepack enable
         - node scripts/zerops-bootstrap.mjs
+      # NOTE: `prepareCommands` above bakes pg_dump into the runtime image, but a
+      # zcli SSH-push deploy reuses cached run-config and skips it — so after a
+      # fast deploy install it ad-hoc (`sudo apk add postgresql16-client`) or
+      # trigger a FULL Zerops build (git-push / dashboard) to apply prepareCommands.
       start: pnpm --filter @sentinel/web start
       envVariables:
         NODE_ENV: production
