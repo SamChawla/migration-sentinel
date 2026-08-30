@@ -30,6 +30,9 @@ services:
       # Placeholders — set the real values in the GUI (Service → Env variables →
       # Secret). Referenced by zerops.yml run.envVariables.
       APPROVER_TOKEN: change-me
+      # Password for the scoped `sentinel_app` role bootstrap creates — owner
+      # of sentinel/prod/staging only, never the PostgreSQL superuser.
+      APP_DB_PASSWORD: change-me
       ANTHROPIC_API_KEY: sk-ant-...
       TRUEFORGE_BASE_URL: http://localhost:8790
       EURON_API_KEY: ""

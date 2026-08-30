@@ -9,6 +9,12 @@
 //
 // Required env (set in zerops.yml run.envVariables):
 //   SHADOW_ADMIN_URL  superuser @ the `postgres` maintenance DB — used to CREATE DATABASE
+//                     and to create/own the scoped app role below. Never handed to the
+//                     app itself: DATABASE_URL/TARGET_DB_URL/STAGING_DB_URL connect as
+//                     `sentinel_app` instead, so migration SQL can't reach past the
+//                     three databases it owns (cluster state, other tenants' DBs, and
+//                     the shadow admin DB stay out of reach).
+//   APP_DB_PASSWORD   password bootstrap sets on the `sentinel_app` role
 //   DATABASE_URL      sentinel control-plane DB (drizzle migrate target)
 //   TARGET_DB_URL     prod target DB (seeded with the demo dataset)
 //   STAGING_DB_URL    staging target DB (seeded — the promotion ladder needs it)
@@ -29,14 +35,23 @@ function dbNameFromUrl(url) {
   return new URL(url).pathname.replace(/^\//, "") || null;
 }
 
+const APP_ROLE = "sentinel_app";
+
 async function ensureDatabases() {
   const adminUrl = process.env.SHADOW_ADMIN_URL;
   if (!adminUrl) throw new Error("SHADOW_ADMIN_URL (superuser @ postgres DB) is required to create databases.");
 
-  const wanted = [
+  // Only sentinel/prod/staging are handed to the scoped `sentinel_app` role
+  // (ensureAppRole below). The shadow DB stays superuser-only — clone
+  // lifecycle needs cluster-wide CREATE/DROP.
+  const scoped = [
     dbNameFromUrl(process.env.DATABASE_URL ?? ""),
     dbNameFromUrl(process.env.TARGET_DB_URL ?? ""),
     dbNameFromUrl(process.env.STAGING_DB_URL ?? ""),
+  ].filter((n) => n && n !== "postgres");
+
+  const wanted = [
+    ...scoped,
     // the shadow *clones* live in their own DBs; ensure a `shadow` DB exists too
     // when SHADOW_DATABASE_URL is set (rollback tooling / integration parity).
     dbNameFromUrl(process.env.SHADOW_DATABASE_URL ?? ""),
@@ -57,9 +72,36 @@ async function ensureDatabases() {
         console.log(`• database ${name} already exists`);
       }
     }
+    await ensureAppRole(admin, new Set(scoped));
   } finally {
     await admin.end();
   }
+}
+
+/**
+ * Creates (or re-passwords) the `sentinel_app` login role and makes it owner
+ * of sentinel/prod/staging only — never the shadow admin DB or the cluster at
+ * large. On PG15+, owning a database also owns its `public` schema (via
+ * `pg_database_owner`), so this is enough for drizzle migrate + the agent's
+ * apply executor to have full DDL on exactly the three intended databases.
+ */
+async function ensureAppRole(admin, dbNames) {
+  const password = process.env.APP_DB_PASSWORD;
+  if (!password) throw new Error("APP_DB_PASSWORD is required to create the scoped app role.");
+
+  const { rowCount } = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [APP_ROLE]);
+  if (rowCount === 0) {
+    await admin.query(`CREATE ROLE ${APP_ROLE} WITH LOGIN PASSWORD $1`, [password]);
+    console.log(`✓ created role ${APP_ROLE}`);
+  } else {
+    await admin.query(`ALTER ROLE ${APP_ROLE} WITH LOGIN PASSWORD $1`, [password]);
+  }
+
+  for (const name of dbNames) {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) throw new Error(`Unsafe database name: ${name}`);
+    await admin.query(`ALTER DATABASE "${name}" OWNER TO ${APP_ROLE}`);
+  }
+  console.log(`✓ ${APP_ROLE} owns: ${[...dbNames].join(", ")}`);
 }
 
 async function migrateControlPlane() {
