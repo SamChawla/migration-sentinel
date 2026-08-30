@@ -19,7 +19,10 @@
   --sans:       var(--font-dm-sans, 'DM Sans'), system-ui, sans-serif;
   --mono:       var(--font-ibm, 'IBM Plex Mono'), 'Menlo', monospace;
   --col-narrow: min(640px, 90vw);
-  --col-wide:   min(1440px, 92vw);
+  /* Wide container tracks the viewport so desktop content clears the 90%
+     coverage rule — the 1440px cap was leaving ~230px gutters on ≥1900px
+     screens (~76% coverage). 1760px keeps a readable ceiling on ultrawide. */
+  --col-wide:   min(1760px, 92vw);
 
   font-family: var(--sans);
   background: var(--bg);

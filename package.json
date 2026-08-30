@@ -22,6 +22,8 @@
     "spike:sandbox": "tsx packages/agent/src/spike-sandbox.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --max-warnings 0",
+    "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web/tsconfig.json",
     "test:watch": "vitest",
     "test:blast": "vitest run blast",
@@ -32,6 +34,7 @@
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@eslint/js": "9",
     "@sentinel/agent": "workspace:*",
     "@sentinel/core": "workspace:*",
     "@sentinel/db": "workspace:*",
@@ -40,8 +43,11 @@
     "@types/pg": "^8.11.10",
     "@vitest/coverage-v8": "^2.1.4",
     "drizzle-orm": "^0.36.0",
+    "eslint": "9",
+    "globals": "^17.11.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
+    "typescript-eslint": "8",
     "vitest": "^2.1.4"
   }
 }

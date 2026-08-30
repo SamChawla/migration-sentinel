@@ -36,7 +36,7 @@ export function MarketingFooter() {
         </div>
       </div>
       <div className="footer-bottom">
-        <p>&copy; 2026 Migration Sentinel. Built for the TrueForge Agent Harness Hackathon.</p>
+        <p>&copy; 2026 Migration Sentinel.</p>
         <div className="footer-tech">
           <span>Postgres</span>
           <span>TrueForge</span>
