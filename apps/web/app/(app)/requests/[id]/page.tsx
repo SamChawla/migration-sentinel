@@ -291,12 +291,7 @@ function fallbackScene(model: SqlModel): { tables: SceneTable[]; edges: FkEdge[]
 
 export default async function ApprovalConsole({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  let r: Awaited<ReturnType<typeof getRequest>>;
-  try {
-    r = await getRequest(id);
-  } catch {
-    notFound();
-  }
+  const r = await getRequest(id);
   if (!r) notFound();
 
   // Deterministic gate policy (ADR-004) — derived from the SQL of record, not
